@@ -176,6 +176,8 @@ const SGX_REPORT_BODY_SIZE = 384;
 // OID定义 (基于ra_tls_common.h)  
 const TCG_DICE_TAGGED_EVIDENCE_OID = '2.23.133.5.4.9';
 const NON_STANDARD_INTEL_SGX_QUOTE_OID = '1.2.840.113741.1.13.1';
+const LEGACY_QUOTE_OID_V1 = '0.6.9.42.840.113741.1337.6';
+const LEGACY_QUOTE_OID = NON_STANDARD_INTEL_SGX_QUOTE_OID;
 const TCG_DICE_TAGGED_EVIDENCE_CBOR_TAG = 60000;
 
 // Quote验证结果枚举 (基于ra_tls_verify_dcap.c)  
@@ -346,13 +348,316 @@ async function extractQuote(input) {
     throw new Error('Unsupported input format');
 }
 
+/**
+ * 最小化DER TLV读取器 - 直接提取证书扩展（支持ECDSA证书）
+ * node-forge的certificateFromPem对ECDSA证书支持有限，会抛出"OID is not RSA"错误
+ * 这个函数使用最小化的DER解析来提取扩展，绕过完整的证书解析
+ */
+function getExtensionFromPemViaAsn1(pemCert, targetOid) {
+    try {
+        const pemMatch = pemCert.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/);
+        if (!pemMatch) {
+            throw new Error('No valid PEM certificate found');
+        }
+        
+        const base64 = pemMatch[0]
+            .replace(/-----BEGIN CERTIFICATE-----/, '')
+            .replace(/-----END CERTIFICATE-----/, '')
+            .replace(/\s/g, '');
+        
+        const derBuffer = ByteUtils.fromBase64(base64);
+        
+        const targetOidBytes = oidToBytes(targetOid);
+        
+        const extValue = extractExtensionByOid(derBuffer, targetOidBytes);
+        return extValue;
+    } catch (error) {
+        throw new Error(`Failed to extract extension via DER parsing: ${error.message}`);
+    }
+}
+
+/**
+ * 将OID字符串转换为DER编码字节
+ */
+function oidToBytes(oid) {
+    const parts = oid.split('.').map(Number);
+    if (parts.length < 2) {
+        throw new Error('Invalid OID format');
+    }
+    
+    const bytes = [parts[0] * 40 + parts[1]];
+    
+    for (let i = 2; i < parts.length; i++) {
+        let value = parts[i];
+        if (value === 0) {
+            bytes.push(0);
+            continue;
+        }
+        
+        const encoded = [];
+        while (value > 0) {
+            encoded.unshift((value & 0x7F) | (encoded.length > 0 ? 0x80 : 0));
+            value >>= 7;
+        }
+        bytes.push(...encoded);
+    }
+    
+    return new Uint8Array([0x06, bytes.length, ...bytes]);
+}
+
+/**
+ * 从DER编码的证书中提取指定OID的扩展值
+ */
+function extractExtensionByOid(derBuffer, targetOidBytes) {
+    let pos = 0;
+    
+    const readLength = () => {
+        if (pos >= derBuffer.length) {
+            throw new Error('Unexpected end of DER data');
+        }
+        
+        const first = derBuffer[pos++];
+        if ((first & 0x80) === 0) {
+            return first;
+        }
+        
+        const numOctets = first & 0x7F;
+        if (numOctets === 0 || numOctets > 4) {
+            throw new Error('Invalid DER length encoding');
+        }
+        
+        let length = 0;
+        for (let i = 0; i < numOctets; i++) {
+            if (pos >= derBuffer.length) {
+                throw new Error('Unexpected end of DER data');
+            }
+            length = (length << 8) | derBuffer[pos++];
+        }
+        return length;
+    };
+    
+    const skipValue = (length) => {
+        pos += length;
+        if (pos > derBuffer.length) {
+            throw new Error('DER value extends beyond buffer');
+        }
+    };
+    
+    const readBytes = (length) => {
+        if (pos + length > derBuffer.length) {
+            throw new Error('Not enough bytes to read');
+        }
+        const bytes = derBuffer.slice(pos, pos + length);
+        pos += length;
+        return bytes;
+    };
+    
+    const matchesOid = (oidBytes) => {
+        if (oidBytes.length !== targetOidBytes.length) {
+            return false;
+        }
+        for (let i = 0; i < oidBytes.length; i++) {
+            if (oidBytes[i] !== targetOidBytes[i]) {
+                return false;
+            }
+        }
+        return true;
+    };
+    
+    if (derBuffer[pos] !== 0x30) {
+        throw new Error('Certificate must start with SEQUENCE tag');
+    }
+    pos++;
+    const certLength = readLength();
+    
+    if (derBuffer[pos] !== 0x30) {
+        throw new Error('TBSCertificate must be a SEQUENCE');
+    }
+    pos++;
+    const tbsLength = readLength();
+    const tbsEnd = pos + tbsLength;
+    
+    while (pos < tbsEnd) {
+        const tag = derBuffer[pos];
+        
+        if (tag === 0xA3) {
+            pos++;
+            const extContainerLength = readLength();
+            
+            if (derBuffer[pos] !== 0x30) {
+                throw new Error('Extensions must be a SEQUENCE');
+            }
+            pos++;
+            const extensionsLength = readLength();
+            const extensionsEnd = pos + extensionsLength;
+            
+            while (pos < extensionsEnd) {
+                if (derBuffer[pos] !== 0x30) {
+                    break;
+                }
+                pos++;
+                const extLength = readLength();
+                const extEnd = pos + extLength;
+                
+                if (derBuffer[pos] !== 0x06) {
+                    pos = extEnd;
+                    continue;
+                }
+                const oidTag = derBuffer[pos++];
+                const oidLength = readLength();
+                const oidBytes = new Uint8Array([oidTag, oidLength, ...readBytes(oidLength)]);
+                
+                let critical = false;
+                if (pos < extEnd && derBuffer[pos] === 0x01) {
+                    pos++;
+                    const boolLength = readLength();
+                    critical = readBytes(boolLength)[0] !== 0;
+                }
+                
+                if (pos >= extEnd) {
+                    pos = extEnd;
+                    continue;
+                }
+                
+                if (derBuffer[pos] !== 0x04) {
+                    pos = extEnd;
+                    continue;
+                }
+                pos++;
+                const valueLength = readLength();
+                const valueBytes = readBytes(valueLength);
+                
+                if (matchesOid(oidBytes)) {
+                    return ByteUtils.toBytes(valueBytes);
+                }
+                
+                pos = extEnd;
+            }
+            
+            return null;
+        } else {
+            pos++;
+            const length = readLength();
+            skipValue(length);
+        }
+    }
+    
+    return null;
+}
+
 /**  
  * 从X.509证书提取Quote  
  * 基于ra_tls_verify_common.c:534-549  
+ * 支持RSA和ECDSA证书
  */
 function extractQuoteFromCert(pemCert) {
-    const cert = forge.pki.certificateFromPem(pemCert);
-    return extractQuoteFromParsedCert(cert);
+    try {
+        const cert = forge.pki.certificateFromPem(pemCert);
+        return extractQuoteFromParsedCert(cert);
+    } catch (error) {
+        if (error.message && (error.message.includes('OID is not RSA') || error.message.includes('Too few bytes'))) {
+            return extractQuoteFromParsedCertViaAsn1(pemCert);
+        }
+        throw error;
+    }
+}
+
+/**
+ * 使用ASN.1方式提取Quote（用于ECDSA证书）
+ */
+function extractQuoteFromParsedCertViaAsn1(pemCert) {
+    let quoteData = getExtensionFromPemViaAsn1(pemCert, TCG_DICE_TAGGED_EVIDENCE_OID);
+    if (quoteData) {
+        return extractStandardQuoteFromExtension(quoteData);
+    }
+    
+    quoteData = getExtensionFromPemViaAsn1(pemCert, LEGACY_QUOTE_OID);
+    if (quoteData) {
+        return extractLegacyQuoteFromExtension(quoteData);
+    }
+    
+    quoteData = getExtensionFromPemViaAsn1(pemCert, LEGACY_QUOTE_OID_V1);
+    if (quoteData) {
+        return extractLegacyQuoteFromExtension(quoteData);
+    }
+    
+    throw new Error('No SGX quote found in certificate');
+}
+
+/**
+ * 从扩展数据中提取标准TCG DICE格式的Quote
+ * 用于ASN.1方式提取的扩展数据
+ */
+function extractStandardQuoteFromExtension(extValue) {
+    try {
+        const cborData = cbor.decode(extValue);
+
+        if (!cborData || cborData.tag !== TCG_DICE_TAGGED_EVIDENCE_CBOR_TAG) {
+            throw new Error('Invalid CBOR tag for TCG DICE evidence');
+        }
+
+        const evidence = cborData.value;
+        if (!Array.isArray(evidence) || evidence.length !== 2) {
+            throw new Error('Invalid evidence structure');
+        }
+
+        const quote = evidence[0];
+        const claimsBstr = evidence[1];
+
+        if (!claimsBstr || !(claimsBstr instanceof Uint8Array || Buffer.isBuffer(claimsBstr))) {
+            throw new Error('Invalid claims structure');
+        }
+
+        const claimsBytes = ByteUtils.toBytes(claimsBstr);
+        const claimsBinaryStr = ByteUtils.toBinaryString(claimsBytes);
+        
+        const claimsHash = forge.md.sha256.create();
+        claimsHash.update(claimsBinaryStr, 'raw');
+        const expectedHash = claimsHash.digest().bytes();
+
+        const quoteBuffer = ByteUtils.toBytes(quote);
+        const reportDataOffset = 48 + 320;
+        const actualHash = ByteUtils.slice(quoteBuffer, reportDataOffset, reportDataOffset + 32);
+
+        const expectedHashBytes = ByteUtils.fromBinaryString(expectedHash);
+        if (!ByteUtils.equalBytes(expectedHashBytes, actualHash)) {
+            throw new Error('Claims hash does not match quote report_data');
+        }
+
+        return {
+            quote: quoteBuffer,
+            quoteSize: quoteBuffer.length
+        };
+    } catch (error) {
+        throw new Error(`Failed to extract standard quote from extension: ${error.message}`);
+    }
+}
+
+/**
+ * 从扩展数据中提取遗留格式的Quote
+ * 用于ASN.1方式提取的扩展数据
+ * 传统格式包含：原始quote数据 + 嵌入的PCK证书链（PEM格式）
+ */
+function extractLegacyQuoteFromExtension(extValue) {
+    const extBytes = ByteUtils.toBytes(extValue);
+    
+    const extString = ByteUtils.toBinaryString(extBytes);
+    const pemStart = extString.indexOf('-----BEGIN CERTIFICATE-----');
+    
+    let quote;
+    if (pemStart > 0) {
+        quote = ByteUtils.slice(extBytes, 0, pemStart);
+    } else {
+        quote = extBytes;
+    }
+    
+    const reportDataOffset = 48 + 320;
+    const reportData = ByteUtils.slice(quote, reportDataOffset, reportDataOffset + 64);
+    
+    return {
+        quote: quote,
+        quoteSize: quote.length
+    };
 }
 
 /**  
