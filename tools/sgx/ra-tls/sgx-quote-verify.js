@@ -1444,9 +1444,16 @@ async function verifyQuoteSignature(quoteData, collateral) {
         throw new Error(`Unsupported quote version: ${quoteData.version}`);
     }
 
+    if (quoteData.attestationKeyType !== 2 && quoteData.attestationKeyType !== 3) {
+        throw new Error(
+            `Unsupported attestation key type: ${quoteData.attestationKeyType}. ` +
+            `SGX DCAP only supports type 2 (ECDSA-P256) and type 3 (ECDSA-P384)`
+        );
+    }
+
     const sigData = quoteData.signature;
     
-    // attestationKeyType: 2 = ECDSA-P256, 3 = ECDSA-P384
+    // attestationKeyType: 2 = ECDSA-P256 (32-byte coordinates), 3 = ECDSA-P384 (48-byte coordinates)
     const coordSize = quoteData.attestationKeyType === 3 ? 48 : 32;
     const sigSize = coordSize * 2;
     const minSigDataSize = sigSize + sigSize + 384 + sigSize; // sig + pubkey + qe_report + qe_report_sig
