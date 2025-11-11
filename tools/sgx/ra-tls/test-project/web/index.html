@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SGX Quote Verification - Browser Tests</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #0066cc;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #0066cc;
+            margin-top: 30px;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background-color: #0066cc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0052a3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .info {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #0066cc;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .test-status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status-pass {
+            background-color: #28a745;
+            color: white;
+        }
+        .status-fail {
+            background-color: #dc3545;
+            color: white;
+        }
+        .status-pending {
+            background-color: #ffc107;
+            color: black;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        .warning {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+            color: #856404;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>SGX DCAP Quote Verification - Browser Tests</h1>
+    
+    <div class="warning">
+        <strong>⚠️ Note:</strong> These tests use mock data and do not validate against real SGX hardware. 
+        For production validation, you must test with actual SGX quotes from real hardware.
+    </div>
+
+    <div class="test-section">
+        <h2>Environment Check</h2>
+        <button onclick="checkEnvironment()">Check Browser Environment</button>
+        <div id="env-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Basic Functionality Tests</h2>
+        <button onclick="runTest('parseP256Quote')">Test P-256 Quote Parsing</button>
+        <button onclick="runTest('parseP384Quote')">Test P-384 Quote Parsing</button>
+        <button onclick="runTest('extractStandardFormat')">Test Standard TCG DICE Format</button>
+        <button onclick="runTest('extractLegacyFormat')">Test Legacy OID Format</button>
+        <button onclick="runAllTests()">Run All Tests</button>
+        <div id="test-results"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Attestation Key Type Validation</h2>
+        <button onclick="runTest('validateP256Type')">Validate P-256 Type (2)</button>
+        <button onclick="runTest('validateP384Type')">Validate P-384 Type (3)</button>
+        <button onclick="runTest('rejectInvalidType')">Reject Invalid Type</button>
+        <div id="type-results"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Hash Algorithm Support</h2>
+        <button onclick="runTest('testSHA256')">Test SHA-256 (IANA ID 1)</button>
+        <button onclick="runTest('testSHA384')">Test SHA-384 (IANA ID 7)</button>
+        <button onclick="runTest('testSHA512')">Test SHA-512 (IANA ID 8)</button>
+        <div id="hash-results"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test Summary</h2>
+        <div id="summary"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/node-forge@1.3.1/dist/forge.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cbor-web@9.0.0/dist/cbor.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/elliptic@6.5.4/dist/elliptic.min.js"></script>
+    <script src="/lib/sgx-quote-verify.js"></script>
+    <script src="test.js"></script>
+</body>
+</html>
