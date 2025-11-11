@@ -1,6 +1,6 @@
 const { verifyQuote } = require('./sgx-quote-verify.js');
 
-const API_KEY = 'a8ece8747e7b4d8d98d23faec065b0b8';
+const API_KEY = '';
 
 const CERTIFICATE = `-----BEGIN CERTIFICATE-----
 MIInTTCCJtKgAwIBAgIBATAKBggqhkjOPQQDAjA5MQ4wDAYDVQQDDAVSQVRMUzEa
