@@ -1,4 +1,5 @@
 const { verifyQuote } = require('./sgx-quote-verify.js');
+const fs=require('fs');
 
 const API_KEY = '';
 
@@ -116,19 +117,35 @@ idsnuhutZrrNzqtByVOy8GJdqs4jJLoCMQDyLU8aMen+G/B5YkSHjg7wA/n3VgVB
 DBYRST7v1S+IO8HqcU8HZFNbC+J5y1U7Lhk=
 -----END CERTIFICATE-----`;
 
-const cache = new Map();
+const cache =null;
 
 async function cacheRead(key) {
-    const value = cache.get(key);
-    if (value) {
-        console.log(`[CACHE] Hit: ${key}`);
+    try {
+        if(!fs.existsSync('./cache.json')){
+            fs.writeFileSync('./cache.json',JSON.stringify({}));
+        }
+        const value = JSON.parse(fs.readFileSync('./cache.json','utf-8'))[key];
+        if (value) {
+            console.log(`[CACHE] Hit: ${key}`);
+        }
+        return value || null;
+    } catch (error) {
+        return null;
     }
-    return value || null;
 }
 
 async function cacheWrite(key, data) {
     console.log(`[CACHE] Write: ${key}`);
-    cache.set(key, data);
+    try {
+        if(!fs.existsSync('./cache.json')){
+            fs.writeFileSync('./cache.json',JSON.stringify({}));
+        }
+        const cacheData = JSON.parse(fs.readFileSync('./cache.json','utf-8'));
+        cacheData[key]=data;
+        fs.writeFileSync('./cache.json',JSON.stringify(cacheData));
+    } catch (error) {
+        
+    }
 }
 
 async function runTest() {
@@ -136,10 +153,10 @@ async function runTest() {
     console.log('SGX Quote Verification Test');
     console.log('='.repeat(80));
     console.log();
-    
+
     console.log('[PHASE 1] Starting quote verification...');
     console.log();
-    
+
     const options = {
         apiKey: API_KEY,
         pccsUrl: 'https://api.trustedservices.intel.com/sgx/certification/v4',
@@ -150,16 +167,16 @@ async function runTest() {
         allowHwConfigNeeded: true,
         allowSwHardeningNeeded: true
     };
-    
+
     try {
         const result = await verifyQuote(CERTIFICATE, options);
-        
+
         console.log();
         console.log('='.repeat(80));
         console.log('VERIFICATION RESULT');
         console.log('='.repeat(80));
         console.log();
-        
+
         if (result.verified) {
             console.log('✓ Quote verification PASSED');
             console.log();
@@ -185,10 +202,10 @@ async function runTest() {
                 console.log(result.stack);
             }
         }
-        
+
         console.log();
         console.log('='.repeat(80));
-        
+
     } catch (error) {
         console.error();
         console.error('='.repeat(80));
