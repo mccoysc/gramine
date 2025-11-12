@@ -3548,37 +3548,37 @@ function evaluateTcbStatus(tcbStatus, allowOutdatedTcb, allowHwConfigNeeded, all
     // 检查是否允许该状态
     switch (result) {
         case SGX_QL_QV_RESULT.OK:
-            return result;
+            return "SGX_QL_QV_RESULT_OK";
 
         case SGX_QL_QV_RESULT.CONFIG_NEEDED:
             if (!allowHwConfigNeeded) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (hardware configuration needed)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_CONFIG_NEEDED";
 
         case SGX_QL_QV_RESULT.OUT_OF_DATE:
             if (!allowOutdatedTcb) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (TCB is out of date)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_OUT_OF_DATE";
 
         case SGX_QL_QV_RESULT.OUT_OF_DATE_CONFIG_NEEDED:
             if (!allowOutdatedTcb || !allowHwConfigNeeded) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (out of date and config needed)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_OUT_OF_DATE_CONFIG_NEEDED";
 
         case SGX_QL_QV_RESULT.SW_HARDENING_NEEDED:
             if (!allowSwHardeningNeeded) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (software hardening needed)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_SW_HARDENING_NEEDED";
 
         case SGX_QL_QV_RESULT.CONFIG_AND_SW_HARDENING_NEEDED:
             if (!allowHwConfigNeeded || !allowSwHardeningNeeded) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (config and SW hardening needed)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_CONFIG_AND_SW_HARDENING_NEEDED";
 
         case SGX_QL_QV_RESULT.REVOKED:
             throw new Error(`TCB status ${tcbStatus} indicates platform is revoked`);
