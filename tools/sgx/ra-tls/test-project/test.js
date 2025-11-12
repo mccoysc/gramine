@@ -1,5 +1,5 @@
 const { verifyQuote } = require('./sgx-quote-verify.js');
-const fs=require('fs');
+const fs = require('fs');
 
 const API_KEY = '';
 
@@ -8,10 +8,10 @@ MIInTTCCJtKgAwIBAgIBATAKBggqhkjOPQQDAjA5MQ4wDAYDVQQDDAVSQVRMUzEa
 MBgGA1UECgwRR3JhbWluZURldmVsb3BlcnMxCzAJBgNVBAYTAlVTMB4XDTAxMDEw
 MTAwMDAwMFoXDTMwMTIzMTIzNTk1OVowOTEOMAwGA1UEAwwFUkFUTFMxGjAYBgNV
 BAoMEUdyYW1pbmVEZXZlbG9wZXJzMQswCQYDVQQGEwJVUzB2MBAGByqGSM49AgEG
-BSuBBAAiA2IABLIJM7b+QEfhSzi+W3xyTXJjWgOY74ffZK1/hAAN+SEWw4LM4r2N
-CaO7d+d+SYfz4xD9xZNIE9n5Ye9gtza5cOzhdXJfvq4PWIUrYqNdZgMv9wP4WbEd
-BuMe4bl0wAfNy6OCJawwgiWoMAkGA1UdEwQCMAAwHQYDVR0OBBYEFEZ1m3KKMjrb
-JtcX8TLkbTH9DgshMB8GA1UdIwQYMBaAFEZ1m3KKMjrbJtcX8TLkbTH9DgshMIIS
+BSuBBAAiA2IABH6vUz7TvB9GfBL8+oltDaanUogFuGrt4StRDYGneVBHiLgKD1yk
+MsRdrd+YcI9wxhD4jpKS9nFjZkVe4sjwaI6USRN5wEuAOS4Jeh0yPWck5jaPZGj7
+cXKazzDpsQJMpqOCJawwgiWoMAkGA1UdEwQCMAAwHQYDVR0OBBYEFDA+FqLxkaK+
+zTn0aNgRjM60JebwMB8GA1UdIwQYMBaAFDA+FqLxkaK+zTn0aNgRjM60JebwMIIS
 jwYLBgkqhkiG+E2KOQYEghJ+AwACAAAAAAALABAAk5pyM/ecTKmUCg2zlX8GBzHY
 ZnPjRzAOKJvKSOrkw1wAAAAACwsQD///AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 AAAAAAAAAAAAAAAAAAAAAAAABwAAAAAAAADnAAAAAAAAAEuP0hn3oauwrGok3CL+
@@ -20,9 +20,9 @@ AADVBFQ7w3F+2H05gvu3sX87B/Erpmtp91wCU2Yg810NWwAAAAAAAAAAAAAAAAAA
 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-AABQ07NtIpwmbMxgKVDqS9If/YOf7SuKTL8gsYVOtaHrygAAAAAAAAAAAAAAAAAA
-AAAAAAAAAAAAAAAAAAAAAAAAyhAAACmQ6P/SRx17MF9Z2DOZsbdPKO2gBFq0MZef
-6WwNIkqN9O0ZLHD4r939MN/vd4ag4k9t3HzW8vJY6sz3qta3TumJj/gYqDrGfn61
+AACZCWbZxaFxviQ56GiHtTuqqQ1MTml0WW8di2IIfEGX5gAAAAAAAAAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAAAAAAyhAAAOKv39V28vsM6DW5CkPULin5z49Kuqdi+jON
+zVT+5E1Wwea7mucXXq73ci8K+eds5+41eRZM31CcoIpedYgVivuJj/gYqDrGfn61
 EyElu/Mq1tZuH2WlnYIdvSD+XqmRzC6oOOcBq/47gsJ3Hb9ST0uU3FG1mMBw2RIg
 4QnitXwOCwsQD///AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 AAAAAAAAFQAAAAAAAADnAAAAAAAAAHj+jP0BCVoPEIr/XEBiS5NhLWwotz4ajSgX
@@ -85,7 +85,7 @@ UWdBRU5TQi83dDIxbFhTTwoyQ3V6cHh3NzRlSkI3MkV5REdnVzVyWEN0eDJ0VlRM
 cTZoS2s2eitVaVJaQ25xUjdwc092Z3FGZVN4bG1UbEpsCmVUbWkyV1l6M3FPQnV6
 Q0J1REFmQmdOVkhTTUVHREFXZ0JRaVpReldXcDAwaWZPRHRKVlN2MUFiT1NjR3JE
 QlMKQmdOVkhSOEVTekJKTUVlZ1JhQkRoa0ZvZEhSd2N6b3ZMMk5sY25ScFptbGpZ
-WFJsY3k1MGNuVnpkR1ZrYzJWeQpkbWxqWlhNdWFXNTBaV3d1WTI5dEwwbHVkR1Zz
+WFJsY3k1MGNuVnpkR1ZrYzJWeQpkbWxqWlhNdWFXNTBaV3d1WTI5dEwwbHVkR1Zs
 VTBkWVVtOXZkRU5CTG1SbGNqQWRCZ05WSFE0RUZnUVVsVzlkCnpiMGI0ZWxBU2Nu
 VTlEUE9BVmNMM2xRd0RnWURWUjBQQVFIL0JBUURBZ0VHTUJJR0ExVWRFd0VCL3dR
 SU1BWUIKQWY4Q0FRQXdDZ1lJS29aSXpqMEVBd0lEUndBd1JBSWdYc1ZraTB3K2k2
@@ -111,20 +111,18 @@ RFZSMFBBUUgvQkFRREFnRUdNQklHQTFVZEV3RUIvd1FJTUFZQkFmOENBUUV3Q2dZ
 SQpLb1pJemowRUF3SURTUUF3UmdJaEFPVy81UWtSK1M5Q2lTRGNOb293THVQUKXN
 XR2YvWWk3R1NWOTRCZ3dUd2cKQWlFQTRKMGxySG9NcytYbzVvL3NYNk85UVd4SFJB
 dlpVR09kUlE3Y3ZxUlhhcUk9Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0KAFgz
-oWtwdWJrZXktaGFzaFgkggFYIFDTs20inCZszGApUOpL0h/9g5/tK4pMvyCxhU61
-oevKMAoGCCqGSM49BAMCA2kAMGYCMQD9BiB1e/3XVxvglyvr2kYS6wMYCXUbTEEW
-idsnuhutZrrNzqtByVOy8GJdqs4jJLoCMQDyLU8aMen+G/B5YkSHjg7wA/n3VgVB
-DBYRST7v1S+IO8HqcU8HZFNbC+J5y1U7Lhk=
+oWtwdWJrZXktaGFzaFgkggFYIJkJZtnFoXG+JDnoaIe1O6qpDUxOaXRZbx2LYgh8
+QZfmMAoGCCqGSM49BAMCA2kAMGYCMQCfXMCQBt17anetO28egHKjWj/WN1OdjxBu
+LytMrFFR7wW3TKvqOpSLqu1ygr1hfyMCMQC1W4B/frzkwZ3FLH9oI4bgN+rQxpvX
+c7V6GkZdjVYL/VlBFbTdto3z4pft0g1pHWQ=
 -----END CERTIFICATE-----`;
-
-const cache =null;
 
 async function cacheRead(key) {
     try {
-        if(!fs.existsSync('./cache.json')){
-            fs.writeFileSync('./cache.json',JSON.stringify({}));
+        if (!fs.existsSync('./cache.json')) {
+            fs.writeFileSync('./cache.json', JSON.stringify({}));
         }
-        const value = JSON.parse(fs.readFileSync('./cache.json','utf-8'))[key];
+        const value = JSON.parse(fs.readFileSync('./cache.json', 'utf-8'))[key];
         if (value) {
             console.log(`[CACHE] Hit: ${key}`);
         }
@@ -137,20 +135,20 @@ async function cacheRead(key) {
 async function cacheWrite(key, data) {
     console.log(`[CACHE] Write: ${key}`);
     try {
-        if(!fs.existsSync('./cache.json')){
-            fs.writeFileSync('./cache.json',JSON.stringify({}));
+        if (!fs.existsSync('./cache.json')) {
+            fs.writeFileSync('./cache.json', JSON.stringify({}));
         }
-        const cacheData = JSON.parse(fs.readFileSync('./cache.json','utf-8'));
-        cacheData[key]=data;
-        fs.writeFileSync('./cache.json',JSON.stringify(cacheData));
+        const cacheData = JSON.parse(fs.readFileSync('./cache.json', 'utf-8'));
+        cacheData[key] = data;
+        fs.writeFileSync('./cache.json', JSON.stringify(cacheData));
     } catch (error) {
-        
+        console.error('Cache write error:', error);
     }
 }
 
 async function runTest() {
     console.log('='.repeat(80));
-    console.log('SGX Quote Verification Test');
+    console.log('SGX Quote Verification Test - User Certificate with P-384 Support');
     console.log('='.repeat(80));
     console.log();
 
@@ -192,6 +190,12 @@ async function runTest() {
             console.log('  ISV_SVN:', result.measurements.isvSvn);
             console.log('  Attributes:', result.measurements.attributes);
             console.log('  Report Data:', result.measurements.reportData);
+            console.log();
+            console.log('Verification Details:');
+            for (const [key, value] of Object.entries(result.verificationDetails)) {
+                const status = value.verified ? '✓' : (value.skipped ? '⊘' : '✗');
+                console.log(`  ${status} ${key}:`, value.verified ? 'PASSED' : (value.skipped ? 'SKIPPED' : `FAILED - ${value.error || 'Unknown error'}`));
+            }
         } else {
             console.log('✗ Quote verification FAILED');
             console.log();
@@ -200,6 +204,12 @@ async function runTest() {
                 console.log();
                 console.log('Stack trace:');
                 console.log(result.stack);
+            }
+            console.log();
+            console.log('Verification Details:');
+            for (const [key, value] of Object.entries(result.verificationDetails)) {
+                const status = value.verified ? '✓' : (value.skipped ? '⊘' : '✗');
+                console.log(`  ${status} ${key}:`, value.verified ? 'PASSED' : (value.skipped ? 'SKIPPED' : `FAILED - ${value.error || 'Unknown error'}`));
             }
         }
 
