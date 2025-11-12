@@ -2884,16 +2884,16 @@ async function verifyRaTlsBinding(certPem, quoteData) {
     if (isBrowser) {
         hash1 = await window.crypto.subtle.digest('SHA-256', spkiDer);
         hash2 = await window.crypto.subtle.digest('SHA-256', subjectPublicKey);
-        if (subjectPublicKey[0] === 0x04 && subjectPublicKey.length === 65) {
-            const xyOnly = ByteUtils.slice(subjectPublicKey, 1, 65);
+        if (subjectPublicKey[0] === 0x04 && (subjectPublicKey.length === 65 || subjectPublicKey.length === 97)) {
+            const xyOnly = ByteUtils.slice(subjectPublicKey, 1, subjectPublicKey.length);
             hash3 = await window.crypto.subtle.digest('SHA-256', xyOnly);
         }
     } else {
         const cryptoModule = require('crypto');
         hash1 = await cryptoModule.webcrypto.subtle.digest('SHA-256', spkiDer);
         hash2 = await cryptoModule.webcrypto.subtle.digest('SHA-256', subjectPublicKey);
-        if (subjectPublicKey[0] === 0x04 && subjectPublicKey.length === 65) {
-            const xyOnly = ByteUtils.slice(subjectPublicKey, 1, 65);
+        if (subjectPublicKey[0] === 0x04 && (subjectPublicKey.length === 65 || subjectPublicKey.length === 97)) {
+            const xyOnly = ByteUtils.slice(subjectPublicKey, 1, subjectPublicKey.length);
             hash3 = await cryptoModule.webcrypto.subtle.digest('SHA-256', xyOnly);
         }
     }
