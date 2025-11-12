@@ -373,7 +373,7 @@ async function verifyQuote(input, options = {}) {
                 mrsigner: ByteUtils.toHex(quoteData.mrsigner),
                 isvProdId: quoteData.isvProdId,
                 isvSvn: quoteData.isvSvn,
-                attributes: quoteData.attributes,
+                attributes: ByteUtils.toHex(quoteData.attributes),
                 attributesParsed: parseAttributes(quoteData.attributes),
                 reportData: ByteUtils.toHex(quoteData.reportData)
             },
