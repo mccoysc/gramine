@@ -239,8 +239,8 @@ async function verifyQuote(input, options = {}) {
     const {
         apiKey,
         pccsUrl = 'https://api.trustedservices.intel.com/sgx/certification/v4',
-        cacheRead = async () => null,
-        cacheWrite = async () => { },
+        cacheRead = async (key) => isBrowser?localStorage.getItem(key):null,
+        cacheWrite = async (key,data) => isBrowser?localStorage.setItem(key,typeof data===typeof""?data:JSON.parse(data)):null,
         allowOutdatedTcb = false,
         allowDebugEnclave = false,
         allowHwConfigNeeded = false,
