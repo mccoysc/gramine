@@ -373,7 +373,7 @@ async function verifyQuote(input, options = {}) {
                 mrsigner: ByteUtils.toHex(quoteData.mrsigner),
                 isvProdId: quoteData.isvProdId,
                 isvSvn: quoteData.isvSvn,
-                attributes: quoteData.attributes,
+                attributes: ByteUtils.toHex(quoteData.attributes),
                 attributesParsed: parseAttributes(quoteData.attributes),
                 reportData: ByteUtils.toHex(quoteData.reportData)
             },
@@ -1986,7 +1986,6 @@ function normalizeSerial(serialBytes) {
 }
 
 function computeSkiFromSpki(certPem) {
-    const isBrowser = typeof window !== 'undefined';
     const certDer = ByteUtils.fromBase64(
         certPem.replace(/-----BEGIN CERTIFICATE-----/, '')
                   .replace(/-----END CERTIFICATE-----/, '')
@@ -2650,13 +2649,12 @@ async function verifyCertChain(certChain, collateral, trustedRootCAs = null) {
                     if (!issuerPubKeyHex.startsWith('04')) {
                         issuerPubKeyHex = '04' + issuerPubKeyHex;
                     }
-                    const EC = require('elliptic').ec;
+                    const EC = isBrowser?elliptic.ec:require('elliptic').ec;
                     const ec = new EC('p256');
                     const issuerKey = ec.keyFromPublic(issuerPubKeyHex, 'hex');
 
                     const derSig = parseDerEcdsaSignature(parsed.signature);
 
-                    const isBrowser = typeof window !== 'undefined';
                     let tbsCertListHash;
                     if (isBrowser) {
                         tbsCertListHash = await window.crypto.subtle.digest('SHA-256', parsed.tbsCertList);
@@ -2765,7 +2763,6 @@ async function verifyTCB(quoteData, tcbInfo) {
  * 使用ECDSA P-256/P-384验证
  */
 async function verifyRaTlsBinding(certPem, quoteData) {
-    const isBrowser = typeof window !== 'undefined';
     
     const certDer = ByteUtils.fromBase64(
         certPem.replace(/-----BEGIN CERTIFICATE-----/, '')
@@ -2925,7 +2922,6 @@ async function verifyRaTlsBinding(certPem, quoteData) {
 }
 
 async function verifyQuoteSignature(quoteData, collateral) {
-    const isBrowser = typeof window !== 'undefined';
     
     if (quoteData.version !== 3 && quoteData.version !== 4) {
         throw new Error(`Unsupported quote version: ${quoteData.version}`);
@@ -3552,37 +3548,37 @@ function evaluateTcbStatus(tcbStatus, allowOutdatedTcb, allowHwConfigNeeded, all
     // 检查是否允许该状态
     switch (result) {
         case SGX_QL_QV_RESULT.OK:
-            return result;
+            return "SGX_QL_QV_RESULT_OK";
 
         case SGX_QL_QV_RESULT.CONFIG_NEEDED:
             if (!allowHwConfigNeeded) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (hardware configuration needed)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_CONFIG_NEEDED";
 
         case SGX_QL_QV_RESULT.OUT_OF_DATE:
             if (!allowOutdatedTcb) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (TCB is out of date)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_OUT_OF_DATE";
 
         case SGX_QL_QV_RESULT.OUT_OF_DATE_CONFIG_NEEDED:
             if (!allowOutdatedTcb || !allowHwConfigNeeded) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (out of date and config needed)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_OUT_OF_DATE_CONFIG_NEEDED";
 
         case SGX_QL_QV_RESULT.SW_HARDENING_NEEDED:
             if (!allowSwHardeningNeeded) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (software hardening needed)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_SW_HARDENING_NEEDED";
 
         case SGX_QL_QV_RESULT.CONFIG_AND_SW_HARDENING_NEEDED:
             if (!allowHwConfigNeeded || !allowSwHardeningNeeded) {
                 throw new Error(`TCB status ${tcbStatus} not allowed (config and SW hardening needed)`);
             }
-            return result;
+            return "SGX_QL_QV_RESULT_CONFIG_AND_SW_HARDENING_NEEDED";
 
         case SGX_QL_QV_RESULT.REVOKED:
             throw new Error(`TCB status ${tcbStatus} indicates platform is revoked`);
