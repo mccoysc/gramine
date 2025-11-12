@@ -1986,7 +1986,6 @@ function normalizeSerial(serialBytes) {
 }
 
 function computeSkiFromSpki(certPem) {
-    const isBrowser = typeof window !== 'undefined';
     const certDer = ByteUtils.fromBase64(
         certPem.replace(/-----BEGIN CERTIFICATE-----/, '')
                   .replace(/-----END CERTIFICATE-----/, '')
@@ -2650,13 +2649,12 @@ async function verifyCertChain(certChain, collateral, trustedRootCAs = null) {
                     if (!issuerPubKeyHex.startsWith('04')) {
                         issuerPubKeyHex = '04' + issuerPubKeyHex;
                     }
-                    const EC = require('elliptic').ec;
+                    const EC = isBrowser?elliptic.ec:require('elliptic').ec;
                     const ec = new EC('p256');
                     const issuerKey = ec.keyFromPublic(issuerPubKeyHex, 'hex');
 
                     const derSig = parseDerEcdsaSignature(parsed.signature);
 
-                    const isBrowser = typeof window !== 'undefined';
                     let tbsCertListHash;
                     if (isBrowser) {
                         tbsCertListHash = await window.crypto.subtle.digest('SHA-256', parsed.tbsCertList);
@@ -2765,7 +2763,6 @@ async function verifyTCB(quoteData, tcbInfo) {
  * 使用ECDSA P-256/P-384验证
  */
 async function verifyRaTlsBinding(certPem, quoteData) {
-    const isBrowser = typeof window !== 'undefined';
     
     const certDer = ByteUtils.fromBase64(
         certPem.replace(/-----BEGIN CERTIFICATE-----/, '')
@@ -2925,7 +2922,6 @@ async function verifyRaTlsBinding(certPem, quoteData) {
 }
 
 async function verifyQuoteSignature(quoteData, collateral) {
-    const isBrowser = typeof window !== 'undefined';
     
     if (quoteData.version !== 3 && quoteData.version !== 4) {
         throw new Error(`Unsupported quote version: ${quoteData.version}`);
