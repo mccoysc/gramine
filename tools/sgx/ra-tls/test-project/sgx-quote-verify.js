@@ -5,22 +5,18 @@
 const isBrowser = typeof window !== 'undefined';
 
 // 第三方库导入
-let forge, cbor, elliptic, nodeFetch;
 if (isBrowser) {
-    // 浏览器环境需要通过script标签引入
-    forge = window.forge;
-    cbor = window.CBOR;
-    elliptic = window.elliptic;
 } else {
     // Node.js环境
-    forge = require('node-forge');
-    cbor = require('cbor');
-    elliptic = require('elliptic');
+    global.forge = require('node-forge');
+    global.cbor = require('cbor');
+    global.elliptic = require('elliptic');
     try {
         if (typeof fetch === 'undefined') {
-            nodeFetch = require('node-fetch');
+            global.nodeFetch = require('node-fetch');
         }
     } catch (e) {
+        console.log(e);
     }
 }
 
@@ -214,6 +210,13 @@ AiEA4J0lrHoMs+Xo5o/sX6O9QWxHRAvZUGOdRQ7cvqRXaqI=
 INTEL_SGX_ROOT_CA_CERTS.G3=INTEL_SGX_ROOT_CA_CERTS.G1;
 INTEL_SGX_ROOT_CA_CERTS.G4=INTEL_SGX_ROOT_CA_CERTS.G1;
 
+function setFetchFunction(customFetch) {
+    if(!isBrowser) {
+        window.fetch = customFetch;
+    }else{
+        global.fetch = customFetch;
+    }
+}
 
 /**
  * 主验证函数
@@ -3584,7 +3587,8 @@ if (typeof module !== 'undefined' && module.exports) {
         INTEL_SGX_ROOT_CA_CERTS,
         parseQuoteStructure,
         extractQuote,
-        ByteUtils
+        ByteUtils,
+        setFetchFunction
     };
 } else {
     // 浏览器环境
@@ -3594,6 +3598,7 @@ if (typeof module !== 'undefined' && module.exports) {
         INTEL_SGX_ROOT_CA_CERTS,
         parseQuoteStructure,
         extractQuote,
-        ByteUtils
+        ByteUtils,
+        setFetchFunction
     };
 }
