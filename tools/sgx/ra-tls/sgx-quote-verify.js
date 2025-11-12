@@ -374,6 +374,7 @@ async function verifyQuote(input, options = {}) {
                 isvProdId: quoteData.isvProdId,
                 isvSvn: quoteData.isvSvn,
                 attributes: quoteData.attributes,
+                attributesParsed: parseAttributes(quoteData.attributes),
                 reportData: ByteUtils.toHex(quoteData.reportData)
             },
             tcbStatus: tcbStatusToString(tcbStatus),
@@ -392,6 +393,7 @@ async function verifyQuote(input, options = {}) {
                 isvProdId: quoteData.isvProdId,
                 isvSvn: quoteData.isvSvn,
                 attributes: quoteData.attributes,
+                attributesParsed: parseAttributes(quoteData.attributes),
                 reportData: ByteUtils.toHex(quoteData.reportData)
             } : null,
             tcbStatus: tcbStatus ? tcbStatusToString(tcbStatus) : null,
@@ -3433,6 +3435,56 @@ function verifyMeasurementPolicy(quoteData, policy) {
 }
 
 /**
+ * 解析SGX Enclave属性
+ * 将16字节的attributes字段解析为可读的flags和xfrm结构
+ * @param {Buffer|Uint8Array} attributes - 16字节的attributes数据
+ * @returns {Object} 包含解析后的flags和xfrm信息
+ */
+function parseAttributes(attributes) {
+    if (!attributes || attributes.length < 16) {
+        throw new Error('Invalid enclave attributes: must be 16 bytes');
+    }
+
+    const view = ByteUtils.dataView(attributes);
+    
+    // Attributes结构: flags(8 bytes) + xfrm(8 bytes)
+    const flags = view.getBigUint64(0, true);
+    const xfrm = view.getBigUint64(8, true);
+
+    const hasFlag = (bit) => ((flags >> BigInt(bit)) & 1n) === 1n;
+    const hasXfrm = (bit) => ((xfrm >> BigInt(bit)) & 1n) === 1n;
+
+    const flagsHex = '0x' + flags.toString(16).padStart(16, '0');
+    const xfrmHex = '0x' + xfrm.toString(16).padStart(16, '0');
+
+    return {
+        raw: ByteUtils.toHex(attributes),
+        flags: {
+            value: flagsHex,
+            initted: hasFlag(0),           // SGX_FLAGS_INITTED - Enclave已初始化
+            debug: hasFlag(1),             // SGX_FLAGS_DEBUG - 调试模式
+            mode64bit: hasFlag(2),         // SGX_FLAGS_MODE64BIT - 64位模式
+            provisionKey: hasFlag(4),      // SGX_FLAGS_PROVISION_KEY - 可访问Provisioning Key
+            einittokenKey: hasFlag(5),     // SGX_FLAGS_EINITTOKEN_KEY - 可访问EINIT Token Key
+            kss: hasFlag(7)                // SGX_FLAGS_KSS - Key Separation and Sharing支持
+        },
+        xfrm: {
+            value: xfrmHex,
+            x87: hasXfrm(0),               // x87 FPU状态
+            sse: hasXfrm(1),               // SSE状态
+            avx: hasXfrm(2),               // AVX状态
+            bndreg: hasXfrm(3),            // MPX BNDREGS状态
+            bndcsr: hasXfrm(4),            // MPX BNDCSR状态
+            opmask: hasXfrm(5),            // AVX-512 opmask状态
+            zmm_hi256: hasXfrm(6),         // AVX-512 ZMM_Hi256状态
+            hi16_zmm: hasXfrm(7),          // AVX-512 Hi16_ZMM状态
+            pkru: hasXfrm(9),              // PKRU状态
+            legacyX87SSE: hasXfrm(0) && hasXfrm(1)  // Legacy x87+SSE (必须设置)
+        }
+    };
+}
+
+/**
  * 验证Enclave属性
  * 基于ra_tls_verify_dcap.c:237-241
  */
@@ -3587,6 +3639,7 @@ if (typeof module !== 'undefined' && module.exports) {
         INTEL_SGX_ROOT_CA_CERTS,
         parseQuoteStructure,
         extractQuote,
+        parseAttributes,
         ByteUtils,
         setFetchFunction
     };
@@ -3598,6 +3651,7 @@ if (typeof module !== 'undefined' && module.exports) {
         INTEL_SGX_ROOT_CA_CERTS,
         parseQuoteStructure,
         extractQuote,
+        parseAttributes,
         ByteUtils,
         setFetchFunction
     };
