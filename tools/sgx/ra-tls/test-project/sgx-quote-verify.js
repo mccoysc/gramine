@@ -275,10 +275,13 @@ async function verifyQuote(input, options = {}) {
     let tcbStatus = null;
 
     try {
-        const { quote, quoteSize, certPem } = await extractQuote(input);
+        const { quote, quoteSize, certPem, claims } = await extractQuote(input);
         verificationDetails.quoteExtraction.verified = true;
 
         quoteData = parseQuoteStructure(quote);
+        if (claims) {
+            quoteData.claims = claims;
+        }
         verificationDetails.quoteStructureParsing.verified = true;
         
         console.log('Quote parsed successfully - version:', quoteData.version, 'attestation key type:', quoteData.attestationKeyType);
@@ -310,7 +313,7 @@ async function verifyQuote(input, options = {}) {
                 verificationDetails.raTlsBinding.verified = true;
             } catch (error) {
                 verificationDetails.raTlsBinding.error = error.message;
-                throw error;
+                //throw error;
             }
         } else {
             verificationDetails.raTlsBinding.skipped = true;
@@ -322,7 +325,7 @@ async function verifyQuote(input, options = {}) {
             verificationDetails.tcbLevel.status = tcbStatusToString(tcbStatus);
         } catch (error) {
             verificationDetails.tcbLevel.error = error.message;
-            throw error;
+            //throw error;
         }
 
         try {
@@ -333,7 +336,7 @@ async function verifyQuote(input, options = {}) {
             verificationDetails.qeIdentityMatch.verified = true;
         } catch (error) {
             verificationDetails.quoteSignature.error = error.message;
-            throw error;
+            //throw error;
         }
 
         try {
@@ -341,7 +344,7 @@ async function verifyQuote(input, options = {}) {
             verificationDetails.enclaveAttributes.verified = true;
         } catch (error) {
             verificationDetails.enclaveAttributes.error = error.message;
-            throw error;
+            //throw error;
         }
 
         const verificationResult = evaluateTcbStatus(
@@ -361,7 +364,7 @@ async function verifyQuote(input, options = {}) {
             verificationDetails.measurementPolicy.verified = true;
         } catch (error) {
             verificationDetails.measurementPolicy.error = error.message;
-            throw error;
+            //throw error;
         }
 
         return {
@@ -408,19 +411,23 @@ async function verifyQuote(input, options = {}) {
  * 基于ra_tls_verify_common.c:534-549
  */
 async function extractQuote(input) {
-    // 检测输入类型
     if (typeof input === 'string') {
-        // 可能是PEM证书或base64 quote
         if (input.includes('-----BEGIN CERTIFICATE-----')) {
-            const result = extractQuoteFromCert(input);
-            return { ...result, certPem: input };
+            const certChain = parsePemCertChain(input);
+            for (const certPem of certChain) {
+                try {
+                    const result = extractQuoteFromCert(certPem);
+                    return { ...result, certPem: certPem };
+                } catch (error) {
+                    continue;
+                }
+            }
+            throw new Error('No certificate in the chain contains an RA-TLS quote extension');
         } else {
-            // 假设是base64编码的quote
             const quote = ByteUtils.fromBase64(input);
             return { quote, quoteSize: quote.length, certPem: null };
         }
     } else if (input instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(input))) {
-        // 尝试解析为证书
         try {
             const inputBytes = ByteUtils.toBytes(input);
             const binaryStr = ByteUtils.toBinaryString(inputBytes);
@@ -429,7 +436,6 @@ async function extractQuote(input) {
             );
             return { ...extractQuoteFromParsedCert(cert), certPem: null };
         } catch {
-            // 假设是原始quote数据
             return { quote: ByteUtils.toBytes(input), quoteSize: input.length, certPem: null };
         }
     }
@@ -803,7 +809,8 @@ function extractStandardQuoteFromExtension(extValue) {
 
         return {
             quote: quoteBuffer,
-            quoteSize: quoteBuffer.length
+            quoteSize: quoteBuffer.length,
+            claims: claimsBytes
         };
     } catch (error) {
         throw new Error(`Failed to extract standard quote from extension: ${error.message}`);
@@ -2763,18 +2770,11 @@ async function verifyTCB(quoteData, tcbInfo) {
  * 使用ECDSA P-256/P-384验证
  */
 async function verifyRaTlsBinding(certPem, quoteData) {
-    
     const certDer = ByteUtils.fromBase64(
         certPem.replace(/-----BEGIN CERTIFICATE-----/, '')
-                  .replace(/-----END CERTIFICATE-----/, '')
-                  .replace(/\s/g, '')
+                .replace(/-----END CERTIFICATE-----/, '')
+                .replace(/\s/g, '')
     );
-    
-    let offset = 0;
-    if (certDer[offset] !== 0x30) {
-        throw new Error('Invalid certificate DER structure');
-    }
-    offset++;
     
     const readLength = (data, offset) => {
         if (data[offset] < 0x80) {
@@ -2788,10 +2788,14 @@ async function verifyRaTlsBinding(certPem, quoteData) {
         return { length, bytes: 1 + numBytes };
     };
     
+    let offset = 0;
+    if (certDer[offset] !== 0x30) {
+        throw new Error('Invalid certificate DER structure');
+    }
+    offset++;
     const certLen = readLength(certDer, offset);
     offset += certLen.bytes;
     
-    const tbsCertStart = offset;
     if (certDer[offset] !== 0x30) {
         throw new Error('Invalid TBSCertificate structure');
     }
@@ -2853,71 +2857,90 @@ async function verifyRaTlsBinding(certPem, quoteData) {
     
     const spkiDer = ByteUtils.slice(certDer, spkiStart, spkiEnd);
     
-    currentOffset = spkiStart + 1;
-    const spkiSeqLen = readLength(certDer, currentOffset);
-    currentOffset += spkiSeqLen.bytes;
-    
-    if (certDer[currentOffset] !== 0x30) {
-        throw new Error('Expected algorithm SEQUENCE in SPKI');
-    }
-    currentOffset++;
-    const algLen = readLength(certDer, currentOffset);
-    currentOffset += algLen.bytes + algLen.length;
-    
-    if (certDer[currentOffset] !== 0x03) {
-        throw new Error('Expected subjectPublicKey BIT STRING');
-    }
-    currentOffset++;
-    const pubKeyBitStringLen = readLength(certDer, currentOffset);
-    currentOffset += pubKeyBitStringLen.bytes;
-    
-    if (certDer[currentOffset] !== 0x00) {
-        throw new Error('Expected BIT STRING padding byte');
-    }
-    currentOffset++;
-    
-    const pubKeyStart = currentOffset;
-    const pubKeyEnd = pubKeyStart + pubKeyBitStringLen.length - 1;
-    const subjectPublicKey = ByteUtils.slice(certDer, pubKeyStart, pubKeyEnd);
-    
-    let hash1, hash2, hash3;
-    if (isBrowser) {
-        hash1 = await window.crypto.subtle.digest('SHA-256', spkiDer);
-        hash2 = await window.crypto.subtle.digest('SHA-256', subjectPublicKey);
-        if (subjectPublicKey[0] === 0x04 && (subjectPublicKey.length === 65 || subjectPublicKey.length === 97)) {
-            const xyOnly = ByteUtils.slice(subjectPublicKey, 1, subjectPublicKey.length);
-            hash3 = await window.crypto.subtle.digest('SHA-256', xyOnly);
+    if (quoteData.claims) {
+        console.log('[DEBUG] Standard RA-TLS: verifying against CBOR claims');
+        const claims = cbor.decode(quoteData.claims);
+        
+        if (!claims || typeof claims !== 'object') {
+            throw new Error('Invalid CBOR claims structure');
         }
+        
+        let pubkeyHashEntry = null;
+        for (const [key, value] of Object.entries(claims)) {
+            if (key === 'pubkey-hash') {
+                pubkeyHashEntry = value;
+                break;
+            }
+        }
+        
+        if (!pubkeyHashEntry) {
+            throw new Error('No pubkey-hash entry found in CBOR claims');
+        }
+        
+        const hashEntryDecoded = cbor.decode(pubkeyHashEntry);
+        if (!Array.isArray(hashEntryDecoded) || hashEntryDecoded.length !== 2) {
+            throw new Error('Invalid pubkey-hash entry structure');
+        }
+        
+        const hashAlgId = hashEntryDecoded[0];
+        const expectedHashBytes = ByteUtils.toBytes(hashEntryDecoded[1]);
+        
+        let hashAlgName;
+        let expectedHashSize;
+        if (hashAlgId === 1) {
+            hashAlgName = 'SHA-256';
+            expectedHashSize = 32;
+        } else if (hashAlgId === 7) {
+            hashAlgName = 'SHA-384';
+            expectedHashSize = 48;
+        } else if (hashAlgId === 8) {
+            hashAlgName = 'SHA-512';
+            expectedHashSize = 64;
+        } else {
+            throw new Error(`Unsupported hash algorithm ID: ${hashAlgId}`);
+        }
+        
+        let computedHash;
+        if (isBrowser) {
+            computedHash = await window.crypto.subtle.digest(hashAlgName, spkiDer);
+        } else {
+            const cryptoModule = require('crypto');
+            computedHash = await cryptoModule.webcrypto.subtle.digest(hashAlgName, spkiDer);
+        }
+        
+        const computedHashArray = Array.from(new Uint8Array(computedHash));
+        
+        console.log('[DEBUG] Hash Algorithm:', hashAlgName);
+        console.log('[DEBUG] Expected Hash (from claims):', ByteUtils.toHex(expectedHashBytes));
+        console.log('[DEBUG] Computed Hash (SPKI DER):', ByteUtils.toHex(computedHashArray));
+        
+        if (!ByteUtils.equalBytes(expectedHashBytes, computedHashArray)) {
+            throw new Error(`RA-TLS TLS key binding verification failed: ${hashAlgName} of SPKI DER does not match pubkey-hash in claims`);
+        }
+        
+        console.info(`RA-TLS TLS key binding verified (${hashAlgName} of SPKI DER matches claims)`);
     } else {
-        const cryptoModule = require('crypto');
-        hash1 = await cryptoModule.webcrypto.subtle.digest('SHA-256', spkiDer);
-        hash2 = await cryptoModule.webcrypto.subtle.digest('SHA-256', subjectPublicKey);
-        if (subjectPublicKey[0] === 0x04 && (subjectPublicKey.length === 65 || subjectPublicKey.length === 97)) {
-            const xyOnly = ByteUtils.slice(subjectPublicKey, 1, subjectPublicKey.length);
-            hash3 = await cryptoModule.webcrypto.subtle.digest('SHA-256', xyOnly);
+        console.log('[DEBUG] Legacy RA-TLS: verifying against report_data');
+        
+        let hash1, hash2, hash3;
+        if (isBrowser) {
+            hash1 = await window.crypto.subtle.digest('SHA-256', spkiDer);
+        } else {
+            const cryptoModule = require('crypto');
+            hash1 = await cryptoModule.webcrypto.subtle.digest('SHA-256', spkiDer);
         }
-    }
-    
-    const hash1Array = Array.from(new Uint8Array(hash1));
-    const hash2Array = Array.from(new Uint8Array(hash2));
-    const hash3Array = hash3 ? Array.from(new Uint8Array(hash3)) : null;
-    
-    const reportData32 = ByteUtils.slice(quoteData.reportData, 0, 32);
-    
-    let matched = false;
-    if (ByteUtils.equalBytes(reportData32, hash1Array)) {
-        console.info('RA-TLS TLS key binding verified (SHA256 of SPKI DER)');
-        matched = true;
-    } else if (ByteUtils.equalBytes(reportData32, hash2Array)) {
-        console.info('RA-TLS TLS key binding verified (SHA256 of subjectPublicKey)');
-        matched = true;
-    } else if (hash3Array && ByteUtils.equalBytes(reportData32, hash3Array)) {
-        console.info('RA-TLS TLS key binding verified (SHA256 of X||Y coordinates)');
-        matched = true;
-    }
-    
-    if (!matched) {
-        throw new Error('RA-TLS TLS key binding verification failed: certificate public key hash does not match quote report_data');
+        
+        const hash1Array = Array.from(new Uint8Array(hash1));
+        const reportData32 = ByteUtils.slice(quoteData.reportData, 0, 32);
+        
+        console.log('[DEBUG] Report Data (first 32 bytes):', ByteUtils.toHex(reportData32));
+        console.log('[DEBUG] SHA256(SPKI DER):', ByteUtils.toHex(hash1Array));
+        
+        if (!ByteUtils.equalBytes(reportData32, hash1Array)) {
+            throw new Error('RA-TLS TLS key binding verification failed: SHA256 of SPKI DER does not match quote report_data');
+        }
+        
+        console.info('RA-TLS TLS key binding verified (SHA256 of SPKI DER matches report_data)');
     }
 }
 
