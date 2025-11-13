@@ -211,11 +211,7 @@ INTEL_SGX_ROOT_CA_CERTS.G3=INTEL_SGX_ROOT_CA_CERTS.G1;
 INTEL_SGX_ROOT_CA_CERTS.G4=INTEL_SGX_ROOT_CA_CERTS.G1;
 
 function setFetchFunction(customFetch) {
-    if(!isBrowser) {
-        window.fetch = customFetch;
-    }else{
-        global.fetch = customFetch;
-    }
+    globalThis.fetch = customFetch;
 }
 
 /**
@@ -240,7 +236,7 @@ async function verifyQuote(input, options = {}) {
         apiKey,
         pccsUrl = 'https://api.trustedservices.intel.com/sgx/certification/v4',
         cacheRead = async (key) => isBrowser?localStorage.getItem(key):null,
-        cacheWrite = async (key,data) => isBrowser?localStorage.setItem(key,typeof data===typeof""?data:JSON.parse(data)):null,
+        cacheWrite = async (key,data) => isBrowser?localStorage.setItem(key,typeof data===typeof""?data:JSON.stringify(data)):null,
         allowOutdatedTcb = false,
         allowDebugEnclave = false,
         allowHwConfigNeeded = false,
@@ -1617,13 +1613,207 @@ function parseCommaSeparatedPemChain(pemChainStr) {
 
 /**
  * 验证Intel issuer chain到Intel SGX Root CA
+ * Verifies the Intel issuer certificate chain up to a trusted Intel SGX Root CA
+ * @param {Array<string>} issuerCerts - Array of PEM certificates in leaf→root order
  */
 async function verifyIntelIssuerChain(issuerCerts) {
     if (issuerCerts.length === 0) {
         throw new Error('Empty issuer certificate chain');
     }
 
-    return true;
+    console.info('Verifying Intel issuer chain with', issuerCerts.length, 'certificates');
+
+    for (let i = 0; i < issuerCerts.length - 1; i++) {
+        const childCertPem = issuerCerts[i];
+        const parentCertPem = issuerCerts[i + 1];
+        
+        try {
+            const childCert = forge.pki.certificateFromPem(childCertPem);
+            const parentCert = forge.pki.certificateFromPem(parentCertPem);
+            
+            const childIssuerDn = childCert.issuer.attributes.map(a => `${a.shortName}=${a.value}`).join(',');
+            const parentSubjectDn = parentCert.subject.attributes.map(a => `${a.shortName}=${a.value}`).join(',');
+            
+            if (childIssuerDn !== parentSubjectDn) {
+                throw new Error(`Certificate ${i} issuer does not match certificate ${i + 1} subject`);
+            }
+            
+            const basicConstraints = parentCert.getExtension('basicConstraints');
+            if (basicConstraints && !basicConstraints.cA) {
+                throw new Error(`Certificate ${i + 1} is not a CA certificate`);
+            }
+            
+            const now = new Date();
+            if (now < parentCert.validity.notBefore) {
+                throw new Error(`Certificate ${i + 1} not yet valid`);
+            }
+            if (now > parentCert.validity.notAfter) {
+                throw new Error(`Certificate ${i + 1} has expired`);
+            }
+            
+            const verified = parentCert.verify(childCert);
+            if (!verified) {
+                throw new Error(`Certificate ${i} signature verification failed using certificate ${i + 1}`);
+            }
+            
+            console.info(`Intel issuer certificate ${i} verified by certificate ${i + 1}`);
+        } catch (e) {
+            if (e.message && e.message.includes('OID is not RSA')) {
+                console.info(`Intel issuer certificate ${i} is ECDSA, verifying with elliptic.js`);
+                
+                const childCertDer = ByteUtils.fromBase64(
+                    childCertPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                              .replace(/-----END CERTIFICATE-----/, '')
+                              .replace(/\s/g, '')
+                );
+                
+                let offset = 0;
+                if (childCertDer[offset] !== 0x30) {
+                    throw new Error('Invalid certificate DER structure');
+                }
+                offset++;
+                
+                const readLength = (data, offset) => {
+                    if (data[offset] < 0x80) {
+                        return { length: data[offset], bytes: 1 };
+                    }
+                    const numBytes = data[offset] & 0x7f;
+                    let length = 0;
+                    for (let i = 0; i < numBytes; i++) {
+                        length = (length << 8) | data[offset + 1 + i];
+                    }
+                    return { length, bytes: 1 + numBytes };
+                };
+                
+                const certLen = readLength(childCertDer, offset);
+                offset += certLen.bytes;
+                
+                const tbsCertStart = offset;
+                if (childCertDer[offset] !== 0x30) {
+                    throw new Error('Invalid TBSCertificate structure');
+                }
+                offset++;
+                const tbsCertLen = readLength(childCertDer, offset);
+                offset += tbsCertLen.bytes;
+                const tbsCertEnd = offset + tbsCertLen.length;
+                
+                const tbsCert = ByteUtils.slice(childCertDer, tbsCertStart, tbsCertEnd);
+                
+                offset = tbsCertEnd;
+                if (childCertDer[offset] !== 0x30) {
+                    throw new Error('Invalid signatureAlgorithm structure');
+                }
+                offset++;
+                const sigAlgLen = readLength(childCertDer, offset);
+                offset += sigAlgLen.bytes + sigAlgLen.length;
+                
+                if (childCertDer[offset] !== 0x03) {
+                    throw new Error('Invalid signature BIT STRING');
+                }
+                offset++;
+                const sigLen = readLength(childCertDer, offset);
+                offset += sigLen.bytes;
+                
+                if (childCertDer[offset] !== 0x00) {
+                    throw new Error('Invalid BIT STRING padding');
+                }
+                offset++;
+                
+                const signatureDer = ByteUtils.slice(childCertDer, offset, offset + sigLen.length - 1);
+                
+                const derSig = parseDerEcdsaSignature(signatureDer);
+                
+                let tbsCertHash;
+                if (isBrowser) {
+                    tbsCertHash = await window.crypto.subtle.digest('SHA-256', tbsCert);
+                } else {
+                    const cryptoModule = require('crypto');
+                    tbsCertHash = await cryptoModule.webcrypto.subtle.digest('SHA-256', tbsCert);
+                }
+                const tbsCertHashArray = Array.from(new Uint8Array(tbsCertHash));
+                
+                const parentPubKeyBytes = extractEcdsaPublicKeyFromPem(parentCertPem);
+                const uncompressedMarker = parentPubKeyBytes.indexOf(0x04);
+                if (uncompressedMarker === -1) {
+                    throw new Error('Cannot find uncompressed point marker in parent certificate public key');
+                }
+                
+                const coordStart = uncompressedMarker + 1;
+                const coordSize = 32;
+                
+                const pubKeyX = ByteUtils.slice(parentPubKeyBytes, coordStart, coordStart + coordSize);
+                const pubKeyY = ByteUtils.slice(parentPubKeyBytes, coordStart + coordSize, coordStart + coordSize * 2);
+                
+                const EC = elliptic.ec;
+                const ec = new EC('p256');
+                
+                const key = ec.keyFromPublic({
+                    x: ByteUtils.toHex(pubKeyX),
+                    y: ByteUtils.toHex(pubKeyY)
+                }, 'hex');
+                
+                const verified = key.verify(tbsCertHashArray, { r: derSig.r, s: derSig.s });
+                
+                if (!verified) {
+                    throw new Error(`Intel issuer certificate ${i} ECDSA signature verification failed using certificate ${i + 1}`);
+                }
+                
+                console.info(`Intel issuer certificate ${i} ECDSA signature verified by certificate ${i + 1}`);
+            } else {
+                throw e;
+            }
+        }
+    }
+    
+    // Step 2: Verify trust anchor - the last certificate must be or be signed by a trusted Intel SGX Root CA
+    const rootCandidate = issuerCerts[issuerCerts.length - 1];
+    let rootCandidateCert;
+    
+    try {
+        rootCandidateCert = forge.pki.certificateFromPem(rootCandidate);
+    } catch (e) {
+        rootCandidateCert = null;
+    }
+    
+    const trustedRootPems = [];
+    for (const key in INTEL_SGX_ROOT_CA_CERTS) {
+        trustedRootPems.push(INTEL_SGX_ROOT_CA_CERTS[key]);
+    }
+    
+    const normalizedRootCandidate = rootCandidate.replace(/\s/g, '');
+    for (const trustedRootPem of trustedRootPems) {
+        const normalizedTrustedRoot = trustedRootPem.replace(/\s/g, '');
+        if (normalizedRootCandidate === normalizedTrustedRoot) {
+            console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (exact match)');
+            return true;
+        }
+    }
+    
+    if (rootCandidateCert) {
+        for (const trustedRootPem of trustedRootPems) {
+            try {
+                const trustedRootCert = forge.pki.certificateFromPem(trustedRootPem);
+                
+                const candidateSubjectDn = rootCandidateCert.subject.attributes.map(a => `${a.shortName}=${a.value}`).join(',');
+                const trustedSubjectDn = trustedRootCert.subject.attributes.map(a => `${a.shortName}=${a.value}`).join(',');
+                
+                if (candidateSubjectDn === trustedSubjectDn) {
+                    console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (subject match)');
+                    return true;
+                }
+                
+                const verified = trustedRootCert.verify(rootCandidateCert);
+                if (verified) {
+                    console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (signature verification)');
+                    return true;
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+    }
+    
+    throw new Error('Intel issuer chain not anchored to trusted Intel SGX Root CA');
 }
 
 /**
