@@ -211,11 +211,7 @@ INTEL_SGX_ROOT_CA_CERTS.G3=INTEL_SGX_ROOT_CA_CERTS.G1;
 INTEL_SGX_ROOT_CA_CERTS.G4=INTEL_SGX_ROOT_CA_CERTS.G1;
 
 function setFetchFunction(customFetch) {
-    if(!isBrowser) {
-        window.fetch = customFetch;
-    }else{
-        global.fetch = customFetch;
-    }
+    globalThis.fetch = customFetch;
 }
 
 /**
@@ -240,7 +236,7 @@ async function verifyQuote(input, options = {}) {
         apiKey,
         pccsUrl = 'https://api.trustedservices.intel.com/sgx/certification/v4',
         cacheRead = async (key) => isBrowser?localStorage.getItem(key):null,
-        cacheWrite = async (key,data) => isBrowser?localStorage.setItem(key,typeof data===typeof""?data:JSON.parse(data)):null,
+        cacheWrite = async (key,data) => isBrowser?localStorage.setItem(key,typeof data===typeof""?data:JSON.stringify(data)):null,
         allowOutdatedTcb = false,
         allowDebugEnclave = false,
         allowHwConfigNeeded = false,
@@ -1466,17 +1462,6 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
         signatureBytes = ByteUtils.fromBase64(jsonObj.signature);
     }
     
-    let r, s;
-    try {
-        const derSig = parseDerEcdsaSignature(signatureBytes);
-        r = derSig.r;
-        s = derSig.s;
-    } catch (e) {
-        console.warn(`Failed to parse DER signature for ${dataFieldName}, trying raw format:`, e.message);
-        r = null;
-        s = null;
-    }
-    
     let signingPubKeyBytes;
     try {
         const cert = forge.pki.certificateFromPem(signingCert);
@@ -1492,13 +1477,21 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
         }
     }
     
+    const signingCertDer = ByteUtils.fromBase64(
+        signingCert.replace(/-----BEGIN CERTIFICATE-----/, '')
+                   .replace(/-----END CERTIFICATE-----/, '')
+                   .replace(/\s/g, '')
+    );
+    const signingCertSpki = extractSpkiFromCertDer(signingCertDer);
+    const curveInfo = extractEcCurveFromSpki(signingCertSpki);
+    
     const uncompressedMarker = signingPubKeyBytes.indexOf(0x04);
     if (uncompressedMarker === -1) {
         throw new Error('Cannot find uncompressed point marker in signing certificate public key');
     }
     
     const coordStart = uncompressedMarker + 1;
-    const coordSize = 32;
+    const coordSize = curveInfo.coordSize;
     
     if (signingPubKeyBytes.length < coordStart + coordSize * 2) {
         throw new Error('Invalid signing certificate public key length');
@@ -1508,12 +1501,27 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
     const pubKeyY = ByteUtils.slice(signingPubKeyBytes, coordStart + coordSize, coordStart + coordSize * 2);
     
     const EC = elliptic.ec;
-    const ec = new EC('p256');
+    const ec = new EC(curveInfo.ellipticName);
     
     const key = ec.keyFromPublic({
         x: ByteUtils.toHex(pubKeyX),
         y: ByteUtils.toHex(pubKeyY)
     }, 'hex');
+    
+    let r, s;
+    try {
+        const derSig = parseDerEcdsaSignature(signatureBytes);
+        r = derSig.r;
+        s = derSig.s;
+    } catch (e) {
+        if (signatureBytes.length === coordSize * 2 && signatureBytes[0] !== 0x30) {
+            console.warn(`Failed to parse DER signature for ${dataFieldName}, trying raw format:`, e.message);
+            r = null;
+            s = null;
+        } else {
+            throw new Error(`Failed to parse signature for ${dataFieldName}: ${e.message}`);
+        }
+    }
     
     const dataFieldStartMarker = `"${dataFieldName}":`;
     const dataFieldStart = rawText.indexOf(dataFieldStartMarker);
@@ -1570,6 +1578,9 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
     const dataHashArray = Array.from(new Uint8Array(dataHash));
     
     if (!r || !s) {
+        if (signatureBytes.length !== coordSize * 2) {
+            throw new Error(`Invalid raw signature length for ${dataFieldName}: expected ${coordSize * 2}, got ${signatureBytes.length}`);
+        }
         r = ByteUtils.toHex(ByteUtils.slice(signatureBytes, 0, coordSize));
         s = ByteUtils.toHex(ByteUtils.slice(signatureBytes, coordSize, coordSize * 2));
     }
@@ -1577,10 +1588,10 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
     const verified = key.verify(dataHashArray, { r, s });
     
     if (!verified) {
-        console.warn(`WARNING: ${dataFieldName} signature verification failed - continuing anyway`);
-    } else {
-        console.info(`${dataFieldName} signature verified successfully`);
+        throw new Error(`${dataFieldName} signature verification failed`);
     }
+    
+    console.info(`${dataFieldName} signature verified successfully`);
 
     const dataObj = jsonObj[dataFieldName];
     if (dataObj.issueDate && dataObj.nextUpdate) {
@@ -1617,13 +1628,292 @@ function parseCommaSeparatedPemChain(pemChainStr) {
 
 /**
  * 验证Intel issuer chain到Intel SGX Root CA
+ * Verifies the Intel issuer certificate chain up to a trusted Intel SGX Root CA
+ * @param {Array<string>} issuerCerts - Array of PEM certificates in leaf→root order
  */
 async function verifyIntelIssuerChain(issuerCerts) {
     if (issuerCerts.length === 0) {
         throw new Error('Empty issuer certificate chain');
     }
 
-    return true;
+    console.info('Verifying Intel issuer chain with', issuerCerts.length, 'certificates');
+
+    for (let i = 0; i < issuerCerts.length - 1; i++) {
+        const childCertPem = issuerCerts[i];
+        const parentCertPem = issuerCerts[i + 1];
+        
+        try {
+            const childCert = forge.pki.certificateFromPem(childCertPem);
+            const parentCert = forge.pki.certificateFromPem(parentCertPem);
+            
+            const childIssuerDn = childCert.issuer.attributes.map(a => `${a.shortName}=${a.value}`).join(',');
+            const parentSubjectDn = parentCert.subject.attributes.map(a => `${a.shortName}=${a.value}`).join(',');
+            
+            if (childIssuerDn !== parentSubjectDn) {
+                throw new Error(`Certificate ${i} issuer does not match certificate ${i + 1} subject`);
+            }
+            
+            const basicConstraints = parentCert.getExtension('basicConstraints');
+            if (basicConstraints && !basicConstraints.cA) {
+                throw new Error(`Certificate ${i + 1} is not a CA certificate`);
+            }
+            
+            const now = new Date();
+            if (now < parentCert.validity.notBefore) {
+                throw new Error(`Certificate ${i + 1} not yet valid`);
+            }
+            if (now > parentCert.validity.notAfter) {
+                throw new Error(`Certificate ${i + 1} has expired`);
+            }
+            
+            const verified = parentCert.verify(childCert);
+            if (!verified) {
+                throw new Error(`Certificate ${i} signature verification failed using certificate ${i + 1}`);
+            }
+            
+            console.info(`Intel issuer certificate ${i} verified by certificate ${i + 1}`);
+        } catch (e) {
+            if (e.message && e.message.includes('OID is not RSA')) {
+                console.info(`Intel issuer certificate ${i} is ECDSA, verifying with elliptic.js`);
+                
+                const childCertDer = ByteUtils.fromBase64(
+                    childCertPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                              .replace(/-----END CERTIFICATE-----/, '')
+                              .replace(/\s/g, '')
+                );
+                
+                let offset = 0;
+                if (childCertDer[offset] !== 0x30) {
+                    throw new Error('Invalid certificate DER structure');
+                }
+                offset++;
+                
+                const readLength = (data, offset) => {
+                    if (data[offset] < 0x80) {
+                        return { length: data[offset], bytes: 1 };
+                    }
+                    const numBytes = data[offset] & 0x7f;
+                    let length = 0;
+                    for (let i = 0; i < numBytes; i++) {
+                        length = (length << 8) | data[offset + 1 + i];
+                    }
+                    return { length, bytes: 1 + numBytes };
+                };
+                
+                const certLen = readLength(childCertDer, offset);
+                offset += certLen.bytes;
+                
+                const tbsCertStart = offset;
+                if (childCertDer[offset] !== 0x30) {
+                    throw new Error('Invalid TBSCertificate structure');
+                }
+                offset++;
+                const tbsCertLen = readLength(childCertDer, offset);
+                offset += tbsCertLen.bytes;
+                const tbsCertEnd = offset + tbsCertLen.length;
+                
+                const tbsCert = ByteUtils.slice(childCertDer, tbsCertStart, tbsCertEnd);
+                
+                offset = tbsCertEnd;
+                if (childCertDer[offset] !== 0x30) {
+                    throw new Error('Invalid signatureAlgorithm structure');
+                }
+                offset++;
+                const sigAlgLen = readLength(childCertDer, offset);
+                offset += sigAlgLen.bytes + sigAlgLen.length;
+                
+                if (childCertDer[offset] !== 0x03) {
+                    throw new Error('Invalid signature BIT STRING');
+                }
+                offset++;
+                const sigLen = readLength(childCertDer, offset);
+                offset += sigLen.bytes;
+                
+                if (childCertDer[offset] !== 0x00) {
+                    throw new Error('Invalid BIT STRING padding');
+                }
+                offset++;
+                
+                const signatureDer = ByteUtils.slice(childCertDer, offset, offset + sigLen.length - 1);
+                
+                const derSig = parseDerEcdsaSignature(signatureDer);
+                
+                const parentCertDer = ByteUtils.fromBase64(
+                    parentCertPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                                .replace(/-----END CERTIFICATE-----/, '')
+                                .replace(/\s/g, '')
+                );
+                const parentSpkiDer = extractSpkiFromCertDer(parentCertDer);
+                const curveInfo = extractEcCurveFromSpki(parentSpkiDer);
+                
+                const childTbsAndSig = extractTbsAndSigFromCertDer(childCertDer);
+                const hashAlg = sigAlgOidToHash(childTbsAndSig.sigAlgOid);
+                
+                let tbsCertHash;
+                if (isBrowser) {
+                    tbsCertHash = await window.crypto.subtle.digest(hashAlg, tbsCert);
+                } else {
+                    const cryptoModule = require('crypto');
+                    tbsCertHash = await cryptoModule.webcrypto.subtle.digest(hashAlg, tbsCert);
+                }
+                const tbsCertHashArray = Array.from(new Uint8Array(tbsCertHash));
+                
+                const parentPubKeyBytes = extractEcdsaPublicKeyFromPem(parentCertPem);
+                const uncompressedMarker = parentPubKeyBytes.indexOf(0x04);
+                if (uncompressedMarker === -1) {
+                    throw new Error('Cannot find uncompressed point marker in parent certificate public key');
+                }
+                
+                const coordStart = uncompressedMarker + 1;
+                const coordSize = curveInfo.coordSize;
+                
+                const pubKeyX = ByteUtils.slice(parentPubKeyBytes, coordStart, coordStart + coordSize);
+                const pubKeyY = ByteUtils.slice(parentPubKeyBytes, coordStart + coordSize, coordStart + coordSize * 2);
+                
+                const EC = elliptic.ec;
+                const ec = new EC(curveInfo.ellipticName);
+                
+                const key = ec.keyFromPublic({
+                    x: ByteUtils.toHex(pubKeyX),
+                    y: ByteUtils.toHex(pubKeyY)
+                }, 'hex');
+                
+                const verified = key.verify(tbsCertHashArray, { r: derSig.r, s: derSig.s });
+                
+                if (!verified) {
+                    throw new Error(`Intel issuer certificate ${i} ECDSA signature verification failed using certificate ${i + 1}`);
+                }
+                
+                console.info(`Intel issuer certificate ${i} ECDSA signature verified by certificate ${i + 1}`);
+            } else {
+                throw e;
+            }
+        }
+    }
+    
+    // Step 2: Verify trust anchor - the last certificate must be or be signed by a trusted Intel SGX Root CA
+    const rootCandidate = issuerCerts[issuerCerts.length - 1];
+    
+    const trustedRootPems = [];
+    for (const key in INTEL_SGX_ROOT_CA_CERTS) {
+        trustedRootPems.push(INTEL_SGX_ROOT_CA_CERTS[key]);
+    }
+    
+    const rootCandidateDer = ByteUtils.fromBase64(
+        rootCandidate.replace(/-----BEGIN CERTIFICATE-----/, '')
+                    .replace(/-----END CERTIFICATE-----/, '')
+                    .replace(/\s/g, '')
+    );
+    
+    let rootCandidateTbsAndSig;
+    try {
+        rootCandidateTbsAndSig = extractTbsAndSigFromCertDer(rootCandidateDer);
+    } catch (e) {
+        console.warn('Failed to extract TBS and signature from root candidate:', e.message);
+        throw new Error('Intel issuer chain not anchored to trusted Intel SGX Root CA');
+    }
+    
+    const hashAlg = sigAlgOidToHash(rootCandidateTbsAndSig.sigAlgOid);
+    
+    let isSelfSigned = false;
+    let spkiMatchesTrustedRoot = false;
+    
+    try {
+        isSelfSigned = await verifyCertSigNative(
+            rootCandidateTbsAndSig.tbsCert,
+            rootCandidateTbsAndSig.signature,
+            rootCandidate,
+            hashAlg
+        );
+        
+        if (isSelfSigned) {
+            const rootCandidateSpki = extractSpkiFromCertDer(rootCandidateDer);
+            const rootCandidateSpkiHex = ByteUtils.toHex(rootCandidateSpki);
+            
+            for (const trustedRootPem of trustedRootPems) {
+                try {
+                    const trustedRootDer = ByteUtils.fromBase64(
+                        trustedRootPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                                    .replace(/-----END CERTIFICATE-----/, '')
+                                    .replace(/\s/g, '')
+                    );
+                    const trustedRootSpki = extractSpkiFromCertDer(trustedRootDer);
+                    const trustedRootSpkiHex = ByteUtils.toHex(trustedRootSpki);
+                    
+                    if (rootCandidateSpkiHex === trustedRootSpkiHex) {
+                        spkiMatchesTrustedRoot = true;
+                        break;
+                    }
+                } catch (e) {
+                    console.warn('Failed to extract SPKI from trusted root:', e.message);
+                    continue;
+                }
+            }
+            
+            if (!spkiMatchesTrustedRoot) {
+                console.warn('Root candidate is self-signed but SPKI does not match any trusted Intel SGX Root CA');
+            }
+        }
+    } catch (e) {
+        console.warn('Self-signature verification failed:', e.message);
+    }
+    
+    let signedByTrustedRoot = false;
+    let akiSkiMatch = false;
+    const rootCandidateAki = extractAuthorityKeyIdentifierFromCert(rootCandidate);
+    
+    for (const trustedRootPem of trustedRootPems) {
+        try {
+            let skiMatch = false;
+            if (rootCandidateAki) {
+                const trustedRootSki = extractSubjectKeyIdentifier(trustedRootPem);
+                if (!trustedRootSki) {
+                    const trustedRootComputedSki = computeSkiFromSpki(trustedRootPem);
+                    if (trustedRootComputedSki) {
+                        skiMatch = ByteUtils.equalBytes(rootCandidateAki, trustedRootComputedSki);
+                    }
+                } else {
+                    skiMatch = ByteUtils.equalBytes(rootCandidateAki, trustedRootSki);
+                }
+                
+                if (!skiMatch) {
+                    continue;
+                }
+            }
+            
+            const verified = await verifyCertSigNative(
+                rootCandidateTbsAndSig.tbsCert,
+                rootCandidateTbsAndSig.signature,
+                trustedRootPem,
+                hashAlg
+            );
+            
+            if (verified) {
+                signedByTrustedRoot = true;
+                akiSkiMatch = skiMatch;
+                break;
+            }
+        } catch (e) {
+            console.warn('Native crypto verification failed for trusted root:', e.message);
+            continue;
+        }
+    }
+    
+    if (isSelfSigned && spkiMatchesTrustedRoot) {
+        console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (self-signed root with matching SPKI)');
+        return true;
+    }
+    
+    if (signedByTrustedRoot) {
+        if (akiSkiMatch) {
+            console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root, AKI/SKI match)');
+        } else {
+            console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root, signature verified)');
+        }
+        return true;
+    }
+    
+    throw new Error('Intel issuer chain not anchored to trusted Intel SGX Root CA');
 }
 
 /**
@@ -1662,6 +1952,341 @@ function parseDerEcdsaSignature(derBytes) {
     } catch (error) {
         throw new Error(`Failed to parse DER ECDSA signature: ${error.message}`);
     }
+}
+
+/**
+ * Convert DER ECDSA signature to IEEE P1363 format (fixed-width r||s)
+ * @param {Uint8Array} derSig - DER encoded signature
+ * @param {number} coordSize - Coordinate size in bytes (32 for P-256, 48 for P-384, 66 for P-521)
+ * @returns {Uint8Array} IEEE P1363 format signature
+ */
+function derSigToP1363(derSig, coordSize = 32) {
+    const parsed = parseDerEcdsaSignature(derSig);
+    
+    const rHex = parsed.r.padStart(coordSize * 2, '0');
+    const sHex = parsed.s.padStart(coordSize * 2, '0');
+    
+    const rBytes = ByteUtils.fromHex(rHex);
+    const sBytes = ByteUtils.fromHex(sHex);
+    
+    return ByteUtils.concat([rBytes, sBytes]);
+}
+
+/**
+ * Extract TBSCertificate and signature from certificate DER
+ * @param {Uint8Array} certDer - Certificate in DER format
+ * @returns {Object} {tbsCert: Uint8Array, signature: Uint8Array, sigAlgOid: string}
+ */
+function extractTbsAndSigFromCertDer(certDer) {
+    const readLength = (data, offset) => {
+        if (data[offset] < 0x80) {
+            return { length: data[offset], bytes: 1 };
+        }
+        const numBytes = data[offset] & 0x7f;
+        let length = 0;
+        for (let i = 0; i < numBytes; i++) {
+            length = (length << 8) | data[offset + 1 + i];
+        }
+        return { length, bytes: 1 + numBytes };
+    };
+    
+    let offset = 0;
+    if (certDer[offset] !== 0x30) {
+        throw new Error('Invalid certificate DER structure');
+    }
+    offset++;
+    
+    const certLen = readLength(certDer, offset);
+    offset += certLen.bytes;
+    
+    const tbsCertStart = offset;
+    if (certDer[offset] !== 0x30) {
+        throw new Error('Invalid TBSCertificate structure');
+    }
+    offset++;
+    const tbsCertLen = readLength(certDer, offset);
+    offset += tbsCertLen.bytes;
+    const tbsCertEnd = offset + tbsCertLen.length;
+    
+    const tbsCert = ByteUtils.slice(certDer, tbsCertStart, tbsCertEnd);
+    
+    offset = tbsCertEnd;
+    if (certDer[offset] !== 0x30) {
+        throw new Error('Invalid signatureAlgorithm structure');
+    }
+    offset++;
+    const sigAlgLen = readLength(certDer, offset);
+    offset += sigAlgLen.bytes;
+    
+    const sigAlgStart = offset;
+    if (certDer[offset] !== 0x06) {
+        throw new Error('Expected OID in signatureAlgorithm');
+    }
+    offset++;
+    const oidLen = certDer[offset];
+    offset++;
+    const oidBytes = ByteUtils.slice(certDer, offset, offset + oidLen);
+    const sigAlgOid = ByteUtils.toHex(oidBytes);
+    
+    offset = sigAlgStart + sigAlgLen.length;
+    
+    if (certDer[offset] !== 0x03) {
+        throw new Error('Invalid signature BIT STRING');
+    }
+    offset++;
+    const sigLen = readLength(certDer, offset);
+    offset += sigLen.bytes;
+    
+    if (certDer[offset] !== 0x00) {
+        throw new Error('Invalid BIT STRING padding');
+    }
+    offset++;
+    
+    const signature = ByteUtils.slice(certDer, offset, offset + sigLen.length - 1);
+    
+    return { tbsCert, signature, sigAlgOid };
+}
+
+/**
+ * Map signature algorithm OID to hash algorithm name
+ * @param {string} oidHex - OID in hex format
+ * @returns {string} Hash algorithm name (e.g., 'SHA-256', 'SHA-384', 'SHA-512')
+ */
+function sigAlgOidToHash(oidHex) {
+    const oidMap = {
+        '2a8648ce3d040302': 'SHA-256',  // ecdsa-with-SHA256 (1.2.840.10045.4.3.2)
+        '2a8648ce3d040303': 'SHA-384',  // ecdsa-with-SHA384 (1.2.840.10045.4.3.3)
+        '2a8648ce3d040304': 'SHA-512',  // ecdsa-with-SHA512 (1.2.840.10045.4.3.4)
+        '2a864886f70d010105': 'SHA-1',  // sha1WithRSAEncryption (1.2.840.113549.1.1.5)
+        '2a864886f70d01010b': 'SHA-256', // sha256WithRSAEncryption (1.2.840.113549.1.1.11)
+        '2a864886f70d01010c': 'SHA-384', // sha384WithRSAEncryption (1.2.840.113549.1.1.12)
+        '2a864886f70d01010d': 'SHA-512', // sha512WithRSAEncryption (1.2.840.113549.1.1.13)
+    };
+    
+    return oidMap[oidHex] || 'SHA-256'; // Default to SHA-256
+}
+
+/**
+ * Verify certificate signature using native Node.js crypto or WebCrypto
+ * @param {Uint8Array} tbsCert - TBSCertificate bytes
+ * @param {Uint8Array} signature - Signature bytes (DER format)
+ * @param {string} parentPem - Parent certificate PEM
+ * @param {string} hashAlg - Hash algorithm name (e.g., 'SHA-256')
+ * @returns {Promise<boolean>} True if signature is valid
+ */
+async function verifyCertSigNative(tbsCert, signature, parentPem, hashAlg) {
+    if (!isBrowser) {
+        // Node.js environment
+        const crypto = require('crypto');
+        
+        try {
+            const webcrypto = crypto.webcrypto || crypto;
+            
+            const parentDer = ByteUtils.fromBase64(
+                parentPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                        .replace(/-----END CERTIFICATE-----/, '')
+                        .replace(/\s/g, '')
+            );
+            
+            const spkiDer = extractSpkiFromCertDer(parentDer);
+            const curveInfo = extractEcCurveFromSpki(spkiDer);
+            
+            const parentKey = await webcrypto.subtle.importKey(
+                'spki',
+                spkiDer,
+                { name: 'ECDSA', namedCurve: curveInfo.namedCurve },
+                false,
+                ['verify']
+            );
+            
+            const sigP1363 = derSigToP1363(signature, curveInfo.coordSize);
+            
+            const verified = await webcrypto.subtle.verify(
+                { name: 'ECDSA', hash: { name: hashAlg } },
+                parentKey,
+                sigP1363,
+                tbsCert
+            );
+            
+            return verified;
+        } catch (e) {
+            console.warn('WebCrypto verification failed, trying Node crypto.verify:', e.message);
+            
+            try {
+                const verify = crypto.createVerify(hashAlg);
+                verify.update(tbsCert);
+                verify.end();
+                
+                const verified = verify.verify(parentPem, signature);
+                return verified;
+            } catch (e2) {
+                console.warn('Node crypto.verify failed:', e2.message);
+                return false;
+            }
+        }
+    } else {
+        try {
+            const parentDer = ByteUtils.fromBase64(
+                parentPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                        .replace(/-----END CERTIFICATE-----/, '')
+                        .replace(/\s/g, '')
+            );
+            
+            const spkiDer = extractSpkiFromCertDer(parentDer);
+            const curveInfo = extractEcCurveFromSpki(spkiDer);
+            
+            const parentKey = await window.crypto.subtle.importKey(
+                'spki',
+                spkiDer,
+                { name: 'ECDSA', namedCurve: curveInfo.namedCurve },
+                false,
+                ['verify']
+            );
+            
+            const sigP1363 = derSigToP1363(signature, curveInfo.coordSize);
+            
+            const verified = await window.crypto.subtle.verify(
+                { name: 'ECDSA', hash: { name: hashAlg } },
+                parentKey,
+                sigP1363,
+                tbsCert
+            );
+            
+            return verified;
+        } catch (e) {
+            console.warn('Browser WebCrypto verification failed:', e.message);
+            return false;
+        }
+    }
+}
+
+/**
+ * Extract EC curve information from SPKI
+ * @param {Uint8Array} spkiDer - SPKI in DER format
+ * @returns {Object} {namedCurve: string, ellipticName: string, coordSize: number}
+ */
+function extractEcCurveFromSpki(spkiDer) {
+    const readLength = (data, offset) => {
+        if (data[offset] < 0x80) {
+            return { length: data[offset], bytes: 1 };
+        }
+        const numBytes = data[offset] & 0x7f;
+        let length = 0;
+        for (let i = 0; i < numBytes; i++) {
+            length = (length << 8) | data[offset + 1 + i];
+        }
+        return { length, bytes: 1 + numBytes };
+    };
+    
+    let offset = 0;
+    
+    if (spkiDer[offset] !== 0x30) throw new Error('Invalid SPKI structure');
+    offset++;
+    const spkiLen = readLength(spkiDer, offset);
+    offset += spkiLen.bytes;
+    
+    if (spkiDer[offset] !== 0x30) throw new Error('Expected AlgorithmIdentifier');
+    offset++;
+    const algIdLen = readLength(spkiDer, offset);
+    offset += algIdLen.bytes;
+    
+    if (spkiDer[offset] !== 0x06) throw new Error('Expected algorithm OID');
+    offset++;
+    const algOidLen = spkiDer[offset];
+    offset++;
+    const algOidBytes = ByteUtils.slice(spkiDer, offset, offset + algOidLen);
+    const algOidHex = ByteUtils.toHex(algOidBytes);
+    offset += algOidLen;
+    
+    if (algOidHex !== '2a8648ce3d0201') {
+        return { namedCurve: 'P-256', ellipticName: 'p256', coordSize: 32 };
+    }
+    
+    if (spkiDer[offset] !== 0x06) throw new Error('Expected namedCurve OID');
+    offset++;
+    const curveOidLen = spkiDer[offset];
+    offset++;
+    const curveOidBytes = ByteUtils.slice(spkiDer, offset, offset + curveOidLen);
+    const curveOidHex = ByteUtils.toHex(curveOidBytes);
+    
+    const curveMap = {
+        '2a8648ce3d030107': { namedCurve: 'P-256', ellipticName: 'p256', coordSize: 32 },
+        '2b81040022': { namedCurve: 'P-384', ellipticName: 'p384', coordSize: 48 },
+        '2b81040023': { namedCurve: 'P-521', ellipticName: 'p521', coordSize: 66 }
+    };
+    
+    return curveMap[curveOidHex] || { namedCurve: 'P-256', ellipticName: 'p256', coordSize: 32 };
+}
+
+/**
+ * Extract SubjectPublicKeyInfo (SPKI) from certificate DER
+ * @param {Uint8Array} certDer - Certificate in DER format
+ * @returns {Uint8Array} SPKI in DER format
+ */
+function extractSpkiFromCertDer(certDer) {
+    const readLength = (data, offset) => {
+        if (data[offset] < 0x80) {
+            return { length: data[offset], bytes: 1 };
+        }
+        const numBytes = data[offset] & 0x7f;
+        let length = 0;
+        for (let i = 0; i < numBytes; i++) {
+            length = (length << 8) | data[offset + 1 + i];
+        }
+        return { length, bytes: 1 + numBytes };
+    };
+    
+    let offset = 0;
+    
+    if (certDer[offset] !== 0x30) throw new Error('Invalid cert DER');
+    offset++;
+    const certLen = readLength(certDer, offset);
+    offset += certLen.bytes;
+    
+    if (certDer[offset] !== 0x30) throw new Error('Invalid TBSCertificate');
+    offset++;
+    const tbsLen = readLength(certDer, offset);
+    offset += tbsLen.bytes;
+    
+    if (certDer[offset] === 0xa0) {
+        offset++;
+        const versionLen = readLength(certDer, offset);
+        offset += versionLen.bytes + versionLen.length;
+    }
+    
+    if (certDer[offset] !== 0x02) throw new Error('Expected serialNumber');
+    offset++;
+    const serialLen = readLength(certDer, offset);
+    offset += serialLen.bytes + serialLen.length;
+    
+    if (certDer[offset] !== 0x30) throw new Error('Expected signature algorithm');
+    offset++;
+    const sigAlgLen = readLength(certDer, offset);
+    offset += sigAlgLen.bytes + sigAlgLen.length;
+    
+    if (certDer[offset] !== 0x30) throw new Error('Expected issuer');
+    offset++;
+    const issuerLen = readLength(certDer, offset);
+    offset += issuerLen.bytes + issuerLen.length;
+    
+    if (certDer[offset] !== 0x30) throw new Error('Expected validity');
+    offset++;
+    const validityLen = readLength(certDer, offset);
+    offset += validityLen.bytes + validityLen.length;
+    
+    if (certDer[offset] !== 0x30) throw new Error('Expected subject');
+    offset++;
+    const subjectLen = readLength(certDer, offset);
+    offset += subjectLen.bytes + subjectLen.length;
+    
+    const spkiStart = offset;
+    if (certDer[offset] !== 0x30) throw new Error('Expected SPKI');
+    offset++;
+    const spkiLen = readLength(certDer, offset);
+    offset += spkiLen.bytes;
+    
+    const spkiEnd = offset + spkiLen.length;
+    return ByteUtils.slice(certDer, spkiStart, spkiEnd);
 }
 
 /**
@@ -1723,6 +2348,49 @@ function extractSubjectKeyIdentifier(certPem) {
                 const skiLen = ski[1];
                 return ByteUtils.slice(ski, 2, 2 + skiLen);
             }
+        }
+    } catch (e) {
+    }
+    
+    return null;
+}
+
+/**
+ * Extract Authority Key Identifier from certificate
+ * @param {string} certPem - Certificate in PEM format
+ * @returns {Uint8Array|null} AKI key identifier or null
+ */
+function extractAuthorityKeyIdentifierFromCert(certPem) {
+    const certDer = ByteUtils.fromBase64(
+        certPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                  .replace(/-----END CERTIFICATE-----/, '')
+                  .replace(/\s/g, '')
+    );
+    
+    const akiOid = [0x55, 0x1d, 0x23];
+    
+    try {
+        const aki = extractExtensionByOid(certDer, akiOid);
+        if (!aki || aki.length < 4) {
+            return null;
+        }
+        
+        let offset = 0;
+        if (aki[offset] !== 0x30) {
+            return null;
+        }
+        offset++;
+        
+        const seqLen = aki[offset] < 0x80 ? aki[offset] : 
+                      (aki[offset] === 0x81 ? aki[offset + 1] : 
+                       ((aki[offset + 1] << 8) | aki[offset + 2]));
+        offset += aki[offset] < 0x80 ? 1 : (aki[offset] === 0x81 ? 2 : 3);
+        
+        if (aki[offset] === 0x80) {
+            offset++;
+            const keyIdLen = aki[offset];
+            offset++;
+            return ByteUtils.slice(aki, offset, offset + keyIdLen);
         }
     } catch (e) {
     }
