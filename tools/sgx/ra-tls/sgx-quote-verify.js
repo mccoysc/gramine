@@ -1462,17 +1462,6 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
         signatureBytes = ByteUtils.fromBase64(jsonObj.signature);
     }
     
-    let r, s;
-    try {
-        const derSig = parseDerEcdsaSignature(signatureBytes);
-        r = derSig.r;
-        s = derSig.s;
-    } catch (e) {
-        console.warn(`Failed to parse DER signature for ${dataFieldName}, trying raw format:`, e.message);
-        r = null;
-        s = null;
-    }
-    
     let signingPubKeyBytes;
     try {
         const cert = forge.pki.certificateFromPem(signingCert);
@@ -1488,13 +1477,21 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
         }
     }
     
+    const signingCertDer = ByteUtils.fromBase64(
+        signingCert.replace(/-----BEGIN CERTIFICATE-----/, '')
+                   .replace(/-----END CERTIFICATE-----/, '')
+                   .replace(/\s/g, '')
+    );
+    const signingCertSpki = extractSpkiFromCertDer(signingCertDer);
+    const curveInfo = extractEcCurveFromSpki(signingCertSpki);
+    
     const uncompressedMarker = signingPubKeyBytes.indexOf(0x04);
     if (uncompressedMarker === -1) {
         throw new Error('Cannot find uncompressed point marker in signing certificate public key');
     }
     
     const coordStart = uncompressedMarker + 1;
-    const coordSize = 32;
+    const coordSize = curveInfo.coordSize;
     
     if (signingPubKeyBytes.length < coordStart + coordSize * 2) {
         throw new Error('Invalid signing certificate public key length');
@@ -1504,12 +1501,27 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
     const pubKeyY = ByteUtils.slice(signingPubKeyBytes, coordStart + coordSize, coordStart + coordSize * 2);
     
     const EC = elliptic.ec;
-    const ec = new EC('p256');
+    const ec = new EC(curveInfo.ellipticName);
     
     const key = ec.keyFromPublic({
         x: ByteUtils.toHex(pubKeyX),
         y: ByteUtils.toHex(pubKeyY)
     }, 'hex');
+    
+    let r, s;
+    try {
+        const derSig = parseDerEcdsaSignature(signatureBytes);
+        r = derSig.r;
+        s = derSig.s;
+    } catch (e) {
+        if (signatureBytes.length === coordSize * 2 && signatureBytes[0] !== 0x30) {
+            console.warn(`Failed to parse DER signature for ${dataFieldName}, trying raw format:`, e.message);
+            r = null;
+            s = null;
+        } else {
+            throw new Error(`Failed to parse signature for ${dataFieldName}: ${e.message}`);
+        }
+    }
     
     const dataFieldStartMarker = `"${dataFieldName}":`;
     const dataFieldStart = rawText.indexOf(dataFieldStartMarker);
@@ -1566,6 +1578,9 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
     const dataHashArray = Array.from(new Uint8Array(dataHash));
     
     if (!r || !s) {
+        if (signatureBytes.length !== coordSize * 2) {
+            throw new Error(`Invalid raw signature length for ${dataFieldName}: expected ${coordSize * 2}, got ${signatureBytes.length}`);
+        }
         r = ByteUtils.toHex(ByteUtils.slice(signatureBytes, 0, coordSize));
         s = ByteUtils.toHex(ByteUtils.slice(signatureBytes, coordSize, coordSize * 2));
     }
@@ -1573,10 +1588,10 @@ async function verifyIntelSignedJson(jsonObj, rawText, dataFieldName, issuerChai
     const verified = key.verify(dataHashArray, { r, s });
     
     if (!verified) {
-        console.warn(`WARNING: ${dataFieldName} signature verification failed - continuing anyway`);
-    } else {
-        console.info(`${dataFieldName} signature verified successfully`);
+        throw new Error(`${dataFieldName} signature verification failed`);
     }
+    
+    console.info(`${dataFieldName} signature verified successfully`);
 
     const dataObj = jsonObj[dataFieldName];
     if (dataObj.issueDate && dataObj.nextUpdate) {
