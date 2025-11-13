@@ -1847,8 +1847,27 @@ async function verifyIntelIssuerChain(issuerCerts) {
         console.warn('Self-signature verification failed:', e.message);
     }
     
+    const rootCandidateAki = extractAuthorityKeyIdentifierFromCert(rootCandidate);
+    
     for (const trustedRootPem of trustedRootPems) {
         try {
+            let skiMatch = false;
+            if (rootCandidateAki) {
+                const trustedRootSki = extractSubjectKeyIdentifier(trustedRootPem);
+                if (!trustedRootSki) {
+                    const trustedRootComputedSki = computeSkiFromSpki(trustedRootPem);
+                    if (trustedRootComputedSki) {
+                        skiMatch = ByteUtils.equalBytes(rootCandidateAki, trustedRootComputedSki);
+                    }
+                } else {
+                    skiMatch = ByteUtils.equalBytes(rootCandidateAki, trustedRootSki);
+                }
+                
+                if (!skiMatch) {
+                    continue;
+                }
+            }
+            
             const verified = await verifyCertSigNative(
                 rootCandidateTbsAndSig.tbsCert,
                 rootCandidateTbsAndSig.signature,
@@ -1857,7 +1876,11 @@ async function verifyIntelIssuerChain(issuerCerts) {
             );
             
             if (verified) {
-                console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root)');
+                if (skiMatch) {
+                    console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root, AKI/SKI match)');
+                } else {
+                    console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root, signature verified)');
+                }
                 return true;
             }
         } catch (e) {
@@ -2301,6 +2324,49 @@ function extractSubjectKeyIdentifier(certPem) {
                 const skiLen = ski[1];
                 return ByteUtils.slice(ski, 2, 2 + skiLen);
             }
+        }
+    } catch (e) {
+    }
+    
+    return null;
+}
+
+/**
+ * Extract Authority Key Identifier from certificate
+ * @param {string} certPem - Certificate in PEM format
+ * @returns {Uint8Array|null} AKI key identifier or null
+ */
+function extractAuthorityKeyIdentifierFromCert(certPem) {
+    const certDer = ByteUtils.fromBase64(
+        certPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                  .replace(/-----END CERTIFICATE-----/, '')
+                  .replace(/\s/g, '')
+    );
+    
+    const akiOid = [0x55, 0x1d, 0x23];
+    
+    try {
+        const aki = extractExtensionByOid(certDer, akiOid);
+        if (!aki || aki.length < 4) {
+            return null;
+        }
+        
+        let offset = 0;
+        if (aki[offset] !== 0x30) {
+            return null;
+        }
+        offset++;
+        
+        const seqLen = aki[offset] < 0x80 ? aki[offset] : 
+                      (aki[offset] === 0x81 ? aki[offset + 1] : 
+                       ((aki[offset + 1] << 8) | aki[offset + 2]));
+        offset += aki[offset] < 0x80 ? 1 : (aki[offset] === 0x81 ? 2 : 3);
+        
+        if (aki[offset] === 0x80) {
+            offset++;
+            const keyIdLen = aki[offset];
+            offset++;
+            return ByteUtils.slice(aki, offset, offset + keyIdLen);
         }
     } catch (e) {
     }
