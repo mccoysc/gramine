@@ -1784,15 +1784,6 @@ async function verifyIntelIssuerChain(issuerCerts) {
         trustedRootPems.push(INTEL_SGX_ROOT_CA_CERTS[key]);
     }
     
-    const normalizedRootCandidate = rootCandidate.replace(/\s/g, '');
-    for (const trustedRootPem of trustedRootPems) {
-        const normalizedTrustedRoot = trustedRootPem.replace(/\s/g, '');
-        if (normalizedRootCandidate === normalizedTrustedRoot) {
-            console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (exact PEM match)');
-            return true;
-        }
-    }
-    
     const rootCandidateDer = ByteUtils.fromBase64(
         rootCandidate.replace(/-----BEGIN CERTIFICATE-----/, '')
                     .replace(/-----END CERTIFICATE-----/, '')
