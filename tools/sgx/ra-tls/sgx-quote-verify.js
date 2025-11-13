@@ -1723,12 +1723,23 @@ async function verifyIntelIssuerChain(issuerCerts) {
                 
                 const derSig = parseDerEcdsaSignature(signatureDer);
                 
+                const parentCertDer = ByteUtils.fromBase64(
+                    parentCertPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                                .replace(/-----END CERTIFICATE-----/, '')
+                                .replace(/\s/g, '')
+                );
+                const parentSpkiDer = extractSpkiFromCertDer(parentCertDer);
+                const curveInfo = extractEcCurveFromSpki(parentSpkiDer);
+                
+                const childTbsAndSig = extractTbsAndSigFromCertDer(childCertDer);
+                const hashAlg = sigAlgOidToHash(childTbsAndSig.sigAlgOid);
+                
                 let tbsCertHash;
                 if (isBrowser) {
-                    tbsCertHash = await window.crypto.subtle.digest('SHA-256', tbsCert);
+                    tbsCertHash = await window.crypto.subtle.digest(hashAlg, tbsCert);
                 } else {
                     const cryptoModule = require('crypto');
-                    tbsCertHash = await cryptoModule.webcrypto.subtle.digest('SHA-256', tbsCert);
+                    tbsCertHash = await cryptoModule.webcrypto.subtle.digest(hashAlg, tbsCert);
                 }
                 const tbsCertHashArray = Array.from(new Uint8Array(tbsCertHash));
                 
@@ -1739,13 +1750,13 @@ async function verifyIntelIssuerChain(issuerCerts) {
                 }
                 
                 const coordStart = uncompressedMarker + 1;
-                const coordSize = 32;
+                const coordSize = curveInfo.coordSize;
                 
                 const pubKeyX = ByteUtils.slice(parentPubKeyBytes, coordStart, coordStart + coordSize);
                 const pubKeyY = ByteUtils.slice(parentPubKeyBytes, coordStart + coordSize, coordStart + coordSize * 2);
                 
                 const EC = elliptic.ec;
-                const ec = new EC('p256');
+                const ec = new EC(curveInfo.ellipticName);
                 
                 const key = ec.keyFromPublic({
                     x: ByteUtils.toHex(pubKeyX),
@@ -1796,10 +1807,48 @@ async function verifyIntelIssuerChain(issuerCerts) {
         throw new Error('Intel issuer chain not anchored to trusted Intel SGX Root CA');
     }
     
+    const hashAlg = sigAlgOidToHash(rootCandidateTbsAndSig.sigAlgOid);
+    
+    try {
+        const selfSigned = await verifyCertSigNative(
+            rootCandidateTbsAndSig.tbsCert,
+            rootCandidateTbsAndSig.signature,
+            rootCandidate,
+            hashAlg
+        );
+        
+        if (selfSigned) {
+            const rootCandidateSpki = extractSpkiFromCertDer(rootCandidateDer);
+            const rootCandidateSpkiHex = ByteUtils.toHex(rootCandidateSpki);
+            
+            for (const trustedRootPem of trustedRootPems) {
+                try {
+                    const trustedRootDer = ByteUtils.fromBase64(
+                        trustedRootPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                                    .replace(/-----END CERTIFICATE-----/, '')
+                                    .replace(/\s/g, '')
+                    );
+                    const trustedRootSpki = extractSpkiFromCertDer(trustedRootDer);
+                    const trustedRootSpkiHex = ByteUtils.toHex(trustedRootSpki);
+                    
+                    if (rootCandidateSpkiHex === trustedRootSpkiHex) {
+                        console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (self-signed root with matching SPKI)');
+                        return true;
+                    }
+                } catch (e) {
+                    console.warn('Failed to extract SPKI from trusted root:', e.message);
+                    continue;
+                }
+            }
+            
+            console.warn('Root candidate is self-signed but SPKI does not match any trusted Intel SGX Root CA');
+        }
+    } catch (e) {
+        console.warn('Self-signature verification failed:', e.message);
+    }
+    
     for (const trustedRootPem of trustedRootPems) {
         try {
-            const hashAlg = sigAlgOidToHash(rootCandidateTbsAndSig.sigAlgOid);
-            
             const verified = await verifyCertSigNative(
                 rootCandidateTbsAndSig.tbsCert,
                 rootCandidateTbsAndSig.signature,
@@ -1808,7 +1857,7 @@ async function verifyIntelIssuerChain(issuerCerts) {
             );
             
             if (verified) {
-                console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (native crypto signature verification)');
+                console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root)');
                 return true;
             }
         } catch (e) {
@@ -1993,16 +2042,17 @@ async function verifyCertSigNative(tbsCert, signature, parentPem, hashAlg) {
             );
             
             const spkiDer = extractSpkiFromCertDer(parentDer);
+            const curveInfo = extractEcCurveFromSpki(spkiDer);
             
             const parentKey = await webcrypto.subtle.importKey(
                 'spki',
                 spkiDer,
-                { name: 'ECDSA', namedCurve: 'P-256' },
+                { name: 'ECDSA', namedCurve: curveInfo.namedCurve },
                 false,
                 ['verify']
             );
             
-            const sigP1363 = derSigToP1363(signature, 32);
+            const sigP1363 = derSigToP1363(signature, curveInfo.coordSize);
             
             const verified = await webcrypto.subtle.verify(
                 { name: 'ECDSA', hash: { name: hashAlg } },
@@ -2036,16 +2086,17 @@ async function verifyCertSigNative(tbsCert, signature, parentPem, hashAlg) {
             );
             
             const spkiDer = extractSpkiFromCertDer(parentDer);
+            const curveInfo = extractEcCurveFromSpki(spkiDer);
             
             const parentKey = await window.crypto.subtle.importKey(
                 'spki',
                 spkiDer,
-                { name: 'ECDSA', namedCurve: 'P-256' },
+                { name: 'ECDSA', namedCurve: curveInfo.namedCurve },
                 false,
                 ['verify']
             );
             
-            const sigP1363 = derSigToP1363(signature, 32);
+            const sigP1363 = derSigToP1363(signature, curveInfo.coordSize);
             
             const verified = await window.crypto.subtle.verify(
                 { name: 'ECDSA', hash: { name: hashAlg } },
@@ -2060,6 +2111,64 @@ async function verifyCertSigNative(tbsCert, signature, parentPem, hashAlg) {
             return false;
         }
     }
+}
+
+/**
+ * Extract EC curve information from SPKI
+ * @param {Uint8Array} spkiDer - SPKI in DER format
+ * @returns {Object} {namedCurve: string, ellipticName: string, coordSize: number}
+ */
+function extractEcCurveFromSpki(spkiDer) {
+    const readLength = (data, offset) => {
+        if (data[offset] < 0x80) {
+            return { length: data[offset], bytes: 1 };
+        }
+        const numBytes = data[offset] & 0x7f;
+        let length = 0;
+        for (let i = 0; i < numBytes; i++) {
+            length = (length << 8) | data[offset + 1 + i];
+        }
+        return { length, bytes: 1 + numBytes };
+    };
+    
+    let offset = 0;
+    
+    if (spkiDer[offset] !== 0x30) throw new Error('Invalid SPKI structure');
+    offset++;
+    const spkiLen = readLength(spkiDer, offset);
+    offset += spkiLen.bytes;
+    
+    if (spkiDer[offset] !== 0x30) throw new Error('Expected AlgorithmIdentifier');
+    offset++;
+    const algIdLen = readLength(spkiDer, offset);
+    offset += algIdLen.bytes;
+    
+    if (spkiDer[offset] !== 0x06) throw new Error('Expected algorithm OID');
+    offset++;
+    const algOidLen = spkiDer[offset];
+    offset++;
+    const algOidBytes = ByteUtils.slice(spkiDer, offset, offset + algOidLen);
+    const algOidHex = ByteUtils.toHex(algOidBytes);
+    offset += algOidLen;
+    
+    if (algOidHex !== '2a8648ce3d0201') {
+        return { namedCurve: 'P-256', ellipticName: 'p256', coordSize: 32 };
+    }
+    
+    if (spkiDer[offset] !== 0x06) throw new Error('Expected namedCurve OID');
+    offset++;
+    const curveOidLen = spkiDer[offset];
+    offset++;
+    const curveOidBytes = ByteUtils.slice(spkiDer, offset, offset + curveOidLen);
+    const curveOidHex = ByteUtils.toHex(curveOidBytes);
+    
+    const curveMap = {
+        '2a8648ce3d030107': { namedCurve: 'P-256', ellipticName: 'p256', coordSize: 32 },
+        '2b81040022': { namedCurve: 'P-384', ellipticName: 'p384', coordSize: 48 },
+        '2b81040023': { namedCurve: 'P-521', ellipticName: 'p521', coordSize: 66 }
+    };
+    
+    return curveMap[curveOidHex] || { namedCurve: 'P-256', ellipticName: 'p256', coordSize: 32 };
 }
 
 /**
