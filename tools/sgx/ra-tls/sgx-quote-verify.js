@@ -1815,15 +1815,18 @@ async function verifyIntelIssuerChain(issuerCerts) {
     
     const hashAlg = sigAlgOidToHash(rootCandidateTbsAndSig.sigAlgOid);
     
+    let isSelfSigned = false;
+    let spkiMatchesTrustedRoot = false;
+    
     try {
-        const selfSigned = await verifyCertSigNative(
+        isSelfSigned = await verifyCertSigNative(
             rootCandidateTbsAndSig.tbsCert,
             rootCandidateTbsAndSig.signature,
             rootCandidate,
             hashAlg
         );
         
-        if (selfSigned) {
+        if (isSelfSigned) {
             const rootCandidateSpki = extractSpkiFromCertDer(rootCandidateDer);
             const rootCandidateSpkiHex = ByteUtils.toHex(rootCandidateSpki);
             
@@ -1838,8 +1841,8 @@ async function verifyIntelIssuerChain(issuerCerts) {
                     const trustedRootSpkiHex = ByteUtils.toHex(trustedRootSpki);
                     
                     if (rootCandidateSpkiHex === trustedRootSpkiHex) {
-                        console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (self-signed root with matching SPKI)');
-                        return true;
+                        spkiMatchesTrustedRoot = true;
+                        break;
                     }
                 } catch (e) {
                     console.warn('Failed to extract SPKI from trusted root:', e.message);
@@ -1847,12 +1850,16 @@ async function verifyIntelIssuerChain(issuerCerts) {
                 }
             }
             
-            console.warn('Root candidate is self-signed but SPKI does not match any trusted Intel SGX Root CA');
+            if (!spkiMatchesTrustedRoot) {
+                console.warn('Root candidate is self-signed but SPKI does not match any trusted Intel SGX Root CA');
+            }
         }
     } catch (e) {
         console.warn('Self-signature verification failed:', e.message);
     }
     
+    let signedByTrustedRoot = false;
+    let akiSkiMatch = false;
     const rootCandidateAki = extractAuthorityKeyIdentifierFromCert(rootCandidate);
     
     for (const trustedRootPem of trustedRootPems) {
@@ -1882,17 +1889,28 @@ async function verifyIntelIssuerChain(issuerCerts) {
             );
             
             if (verified) {
-                if (skiMatch) {
-                    console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root, AKI/SKI match)');
-                } else {
-                    console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root, signature verified)');
-                }
-                return true;
+                signedByTrustedRoot = true;
+                akiSkiMatch = skiMatch;
+                break;
             }
         } catch (e) {
             console.warn('Native crypto verification failed for trusted root:', e.message);
             continue;
         }
+    }
+    
+    if (isSelfSigned && spkiMatchesTrustedRoot) {
+        console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (self-signed root with matching SPKI)');
+        return true;
+    }
+    
+    if (signedByTrustedRoot) {
+        if (akiSkiMatch) {
+            console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root, AKI/SKI match)');
+        } else {
+            console.info('Intel issuer chain anchored to trusted Intel SGX Root CA (intermediate signed by trusted root, signature verified)');
+        }
+        return true;
     }
     
     throw new Error('Intel issuer chain not anchored to trusted Intel SGX Root CA');
