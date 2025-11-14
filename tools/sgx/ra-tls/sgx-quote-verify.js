@@ -363,6 +363,20 @@ async function verifyQuote(input, options = {}) {
             //throw error;
         }
 
+        let platformInstanceId = null;
+        let platformInstanceIdSource = null;
+        
+        if (quoteData.ppid) {
+            platformInstanceId = quoteData.ppid;
+            platformInstanceIdSource = 'ppid';
+        } else if (collateral.pckCertChain && collateral.pckCertChain.length > 0) {
+            const pckLeafCert = collateral.pckCertChain[0];
+            if (typeof pckLeafCert === 'string') {
+                platformInstanceId = await computePckSpkiFingerprint(pckLeafCert);
+                platformInstanceIdSource = 'pck-spki';
+            }
+        }
+
         return {
             verified: true,
             verificationResult,
@@ -374,13 +388,33 @@ async function verifyQuote(input, options = {}) {
                 isvSvn: quoteData.isvSvn,
                 attributes: ByteUtils.toHex(quoteData.attributes),
                 attributesParsed: parseAttributes(quoteData.attributes),
-                reportData: ByteUtils.toHex(quoteData.reportData)
+                reportData: ByteUtils.toHex(quoteData.reportData),
+                platformInstanceId: platformInstanceId,
+                platformInstanceIdSource: platformInstanceIdSource
             },
             tcbStatus: tcbStatusToString(tcbStatus),
             quoteVersion: quoteData.version,
             attestationKeyType: quoteData.attestationKeyType
         };
     } catch (error) {
+        let platformInstanceId = null;
+        let platformInstanceIdSource = null;
+        
+        if (quoteData && quoteData.ppid) {
+            platformInstanceId = quoteData.ppid;
+            platformInstanceIdSource = 'ppid';
+        } else if (collateral && collateral.pckCertChain && collateral.pckCertChain.length > 0) {
+            const pckLeafCert = collateral.pckCertChain[0];
+            if (typeof pckLeafCert === 'string') {
+                try {
+                    platformInstanceId = await computePckSpkiFingerprint(pckLeafCert);
+                    platformInstanceIdSource = 'pck-spki';
+                } catch (e) {
+                    console.warn('Failed to compute platform instance ID in error path:', e.message);
+                }
+            }
+        }
+        
         return {
             verified: false,
             error: error.message,
@@ -393,7 +427,9 @@ async function verifyQuote(input, options = {}) {
                 isvSvn: quoteData.isvSvn,
                 attributes: quoteData.attributes,
                 attributesParsed: parseAttributes(quoteData.attributes),
-                reportData: ByteUtils.toHex(quoteData.reportData)
+                reportData: ByteUtils.toHex(quoteData.reportData),
+                platformInstanceId: platformInstanceId,
+                platformInstanceIdSource: platformInstanceIdSource
             } : null,
             tcbStatus: tcbStatus ? tcbStatusToString(tcbStatus) : null,
             quoteVersion: quoteData ? quoteData.version : null,
@@ -2755,6 +2791,36 @@ function computeSkiFromSpki(certPem) {
         const hash = crypto.createHash('sha1');
         hash.update(Buffer.from(subjectPublicKey));
         return Promise.resolve(hash.digest());
+    }
+}
+
+/**
+ * Compute SHA-256 fingerprint of PCK certificate SPKI for platform identification
+ * @param {string} certPem - PEM encoded certificate
+ * @returns {Promise<string>} Hex-encoded SHA-256 hash of SPKI
+ */
+async function computePckSpkiFingerprint(certPem) {
+    try {
+        const certDer = ByteUtils.fromBase64(
+            certPem.replace(/-----BEGIN CERTIFICATE-----/, '')
+                   .replace(/-----END CERTIFICATE-----/, '')
+                   .replace(/\s/g, '')
+        );
+        
+        const spki = extractSpkiFromCertDer(certDer);
+        
+        let hashBuffer;
+        if (isBrowser) {
+            hashBuffer = await window.crypto.subtle.digest('SHA-256', spki);
+        } else {
+            const crypto = require('crypto');
+            hashBuffer = await crypto.webcrypto.subtle.digest('SHA-256', spki);
+        }
+        
+        return ByteUtils.toHex(new Uint8Array(hashBuffer));
+    } catch (error) {
+        console.warn('Failed to compute PCK SPKI fingerprint:', error.message);
+        return null;
     }
 }
 
