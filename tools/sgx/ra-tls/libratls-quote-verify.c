@@ -74,6 +74,7 @@ static void (*openssl_X509_STORE_CTX_set_error)(X509_STORE_CTX *ctx, int error) 
 static int (*openssl_SSL_get_ex_data_X509_STORE_CTX_idx)(void) = NULL;
 static void *(*openssl_X509_STORE_CTX_get_ex_data)(X509_STORE_CTX *ctx, int idx) = NULL;
 static void *(*openssl_SSL_get_SSL_CTX)(void *ssl) = NULL;
+static int (*openssl_X509_STORE_CTX_get_error_depth)(X509_STORE_CTX *ctx) = NULL;
 
 /* wolfSSL library handle - for detection/logging only */
 static void *g_wolfssl_lib = NULL;
@@ -85,6 +86,7 @@ static void (*wolfssl_X509_STORE_CTX_set_error)(void *ctx, int error) = NULL;
 static int (*wolfssl_SSL_get_ex_data_X509_STORE_CTX_idx)(void) = NULL;
 static void *(*wolfssl_X509_STORE_CTX_get_ex_data)(void *ctx, int idx) = NULL;
 static void *(*wolfssl_SSL_get_SSL_CTX)(void *ssl) = NULL;
+static int (*wolfssl_X509_STORE_CTX_get_error_depth)(void *ctx) = NULL;
 
 /* Real dlopen/dlmopen function pointers */
 static void *(*real_dlopen)(const char *filename, int flags) = NULL;
@@ -1592,11 +1594,6 @@ static int verify_measurements_callback(const char *mrenclave, const char *mrsig
  */
 static int my_verify_callback(void *data, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
 {
-    if (depth != 0)
-    {
-        return 0;
-    }
-
     /* Check if RA-TLS verification is enabled */
     int enabled = is_ratls_enabled();
 
@@ -1613,7 +1610,7 @@ static int my_verify_callback(void *data, mbedtls_x509_crt *crt, int depth, uint
     pthread_mutex_unlock(&g_mbedtls_callback_mutex);
 
     /* If OFF: call user callback and return user's result */
-    if (!enabled)
+    if (!enabled || depth != 0)
     {
         if (entry && entry->verify_callback)
         {
@@ -1693,6 +1690,19 @@ static int ratls_openssl_verify_cb(int preverify_ok, X509_STORE_CTX *ctx)
     /* Check if RA-TLS verification is enabled */
     int enabled = is_ratls_enabled();
 
+    /* Resolve helper function for getting certificate chain depth */
+    if (!openssl_X509_STORE_CTX_get_error_depth)
+    {
+        openssl_X509_STORE_CTX_get_error_depth = dlsym(RTLD_DEFAULT, "X509_STORE_CTX_get_error_depth");
+    }
+
+    /* Get certificate chain depth (0 = peer cert, 1+ = CA certs) */
+    int depth = 0;
+    if (openssl_X509_STORE_CTX_get_error_depth)
+    {
+        depth = openssl_X509_STORE_CTX_get_error_depth(ctx);
+    }
+
     /* Resolve helper functions for context lookup if not already resolved */
     if (!openssl_SSL_get_ex_data_X509_STORE_CTX_idx)
     {
@@ -1737,8 +1747,8 @@ static int ratls_openssl_verify_cb(int preverify_ok, X509_STORE_CTX *ctx)
     }
     pthread_mutex_unlock(&g_openssl_callback_mutex);
 
-    /* If OFF: call user callback and return user's result */
-    if (!enabled)
+    /* If OFF or non-first certificate: call user callback and return user's result */
+    if (!enabled || depth != 0)
     {
         if (entry && entry->verify_callback)
         {
@@ -1835,6 +1845,19 @@ static int ratls_wolfssl_verify_cb(int preverify_ok, void *ctx)
     /* Check if RA-TLS verification is enabled */
     int enabled = is_ratls_enabled();
 
+    /* Resolve helper function for getting certificate chain depth */
+    if (!wolfssl_X509_STORE_CTX_get_error_depth)
+    {
+        wolfssl_X509_STORE_CTX_get_error_depth = dlsym(RTLD_DEFAULT, "wolfSSL_X509_STORE_CTX_get_error_depth");
+    }
+
+    /* Get certificate chain depth (0 = peer cert, 1+ = CA certs) */
+    int depth = 0;
+    if (wolfssl_X509_STORE_CTX_get_error_depth)
+    {
+        depth = wolfssl_X509_STORE_CTX_get_error_depth(ctx);
+    }
+
     /* Resolve helper functions for context lookup if not already resolved */
     if (!wolfssl_SSL_get_ex_data_X509_STORE_CTX_idx)
     {
@@ -1894,8 +1917,8 @@ static int ratls_wolfssl_verify_cb(int preverify_ok, void *ctx)
     }
     pthread_mutex_unlock(&g_wolfssl_callback_mutex);
 
-    /* If OFF: call user callback and return user's result */
-    if (!enabled)
+    /* If OFF or non-first certificate: call user callback and return user's result */
+    if (!enabled || depth != 0)
     {
         if (entry && entry->verify_callback)
         {
