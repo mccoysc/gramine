@@ -34,6 +34,8 @@
 #define RA_TLS_CERT_TIMESTAMP_NOT_BEFORE "RA_TLS_CERT_TIMESTAMP_NOT_BEFORE"
 #define RA_TLS_CERT_TIMESTAMP_NOT_AFTER  "RA_TLS_CERT_TIMESTAMP_NOT_AFTER"
 
+#define RA_TLS_CERT_ALGORITHM "RA_TLS_CERT_ALGORITHM"
+
 typedef enum {
     RA_TLS_ATTESTATION_SCHEME_UNKNOWN = 0,
     RA_TLS_ATTESTATION_SCHEME_DCAP    = 2,
@@ -126,19 +128,35 @@ int ra_tls_verify_callback_extended_der(uint8_t* der_crt, size_t der_crt_size,
 /*!
  * \brief Generic function to generate a key and a corresponding RA-TLS certificate (DER format).
  *
- * \param[out] der_key       Pointer to buffer populated with generated ECDSA keypair in DER format.
- * \param[out] der_key_size  Pointer to size of generated ECDSA keypair.
+ * \param[out] der_key       Pointer to buffer populated with generated keypair in DER format.
+ * \param[out] der_key_size  Pointer to size of generated keypair.
  * \param[out] der_crt       Pointer to buffer populated with self-signed RA-TLS certificate.
  * \param[out] der_crt_size  Pointer to size of self-signed RA-TLS certificate.
  *
  * \returns 0 on success, specific mbedTLS error code (negative int) otherwise.
  *
- * The function first generates a random ECDSA keypair with NIST P-384 (SECP384R1) elliptic curve.
- * Then it calculates the SHA256 hash over the generated public key and retrieves an SGX quote with
- * report_data equal to the calculated hash (this ties the generated certificate key to the SGX
- * quote). Finally, it generates the X.509 self-signed certificate with this key and the SGX quote
- * embedded. The function allocates memory for key and certificate; user is expected to free them
- * after use.
+ * The function first generates a random keypair. By default, it uses ECDSA with NIST P-384
+ * (SECP384R1) elliptic curve. The algorithm can be configured via the RA_TLS_CERT_ALGORITHM
+ * environment variable (e.g., "secp256k1", "secp256r1", "secp384r1", "rsa2048", "rsa3072",
+ * "rsa4096"). Then it calculates the SHA256 hash over the generated public key and retrieves an
+ * SGX quote with report_data equal to the calculated hash (this ties the generated certificate key
+ * to the SGX quote). Finally, it generates the X.509 self-signed certificate with this key and the
+ * SGX quote embedded. The function allocates memory for key and certificate; user is expected to
+ * free them after use.
  */
 int ra_tls_create_key_and_crt_der(uint8_t** der_key, size_t* der_key_size, uint8_t** der_crt,
                                   size_t* der_crt_size);
+
+/*!
+ * \brief Get a list of supported certificate algorithms.
+ *
+ * \param[out] algorithms       Pointer to array of algorithm name strings.
+ * \param[out] algorithms_count Pointer to number of algorithms in the array.
+ *
+ * \returns 0 on success, specific error code (negative int) otherwise.
+ *
+ * This function returns a list of supported algorithm names that can be used with the
+ * RA_TLS_CERT_ALGORITHM environment variable. The returned array is statically allocated
+ * and should not be freed by the caller.
+ */
+int ra_tls_get_supported_algorithms(const char*** algorithms, size_t* algorithms_count);

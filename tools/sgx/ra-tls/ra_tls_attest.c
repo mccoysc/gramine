@@ -28,11 +28,43 @@
 #include <mbedtls/ecp.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/pk.h>
+#include <mbedtls/rsa.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/x509_crt.h>
 
 #include "ra_tls.h"
 #include "ra_tls_common.h"
+
+/* Algorithm configuration structure */
+typedef struct {
+    const char* name;
+    mbedtls_pk_type_t pk_type;
+    union {
+        mbedtls_ecp_group_id ecp_group_id;
+        unsigned int rsa_key_size;
+    } params;
+} algorithm_config_t;
+
+/* Supported algorithms list */
+static const algorithm_config_t g_supported_algorithms[] = {
+    /* EC curves */
+    { "secp256r1", MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_SECP256R1 } },
+    { "secp384r1", MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_SECP384R1 } },
+    { "secp521r1", MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_SECP521R1 } },
+    { "secp256k1", MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_SECP256K1 } },
+    { "secp192r1", MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_SECP192R1 } },
+    { "secp192k1", MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_SECP192K1 } },
+    { "bp256r1",   MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_BP256R1 } },
+    { "bp384r1",   MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_BP384R1 } },
+    { "bp512r1",   MBEDTLS_PK_ECKEY, { .ecp_group_id = MBEDTLS_ECP_DP_BP512R1 } },
+    /* RSA algorithms */
+    { "rsa2048", MBEDTLS_PK_RSA, { .rsa_key_size = 2048 } },
+    { "rsa3072", MBEDTLS_PK_RSA, { .rsa_key_size = 3072 } },
+    { "rsa4096", MBEDTLS_PK_RSA, { .rsa_key_size = 4096 } },
+};
+
+#define DEFAULT_ALGORITHM_NAME "secp384r1"
+#define NUM_SUPPORTED_ALGORITHMS (sizeof(g_supported_algorithms) / sizeof(g_supported_algorithms[0]))
 
 #define CERT_SUBJECT_NAME_VALUES  "CN=RATLS,O=GramineDevelopers,C=US"
 #define CERT_TIMESTAMP_NOT_BEFORE_DEFAULT "20010101000000"
@@ -74,6 +106,45 @@ static ssize_t read_file(const char* path, uint8_t* buf, size_t len) {
 
 static ssize_t write_file(const char* path, uint8_t* buf, size_t len) {
     return rw_file(path, buf, len, /*do_write=*/true);
+}
+
+/*! get algorithm configuration from environment variable or use default */
+static const algorithm_config_t* get_algorithm_config(void) {
+    const char* algo_name = getenv(RA_TLS_CERT_ALGORITHM);
+    if (!algo_name) {
+        algo_name = DEFAULT_ALGORITHM_NAME;
+    }
+
+    for (size_t i = 0; i < NUM_SUPPORTED_ALGORITHMS; i++) {
+        if (strcasecmp(g_supported_algorithms[i].name, algo_name) == 0) {
+            return &g_supported_algorithms[i];
+        }
+    }
+
+    /* If algorithm not found, use default */
+    for (size_t i = 0; i < NUM_SUPPORTED_ALGORITHMS; i++) {
+        if (strcasecmp(g_supported_algorithms[i].name, DEFAULT_ALGORITHM_NAME) == 0) {
+            return &g_supported_algorithms[i];
+        }
+    }
+
+    /* Should never reach here */
+    return &g_supported_algorithms[0];
+}
+
+int ra_tls_get_supported_algorithms(const char*** algorithms, size_t* algorithms_count) {
+    if (!algorithms || !algorithms_count) {
+        return -EINVAL;
+    }
+
+    static const char* algorithm_names[NUM_SUPPORTED_ALGORITHMS];
+    for (size_t i = 0; i < NUM_SUPPORTED_ALGORITHMS; i++) {
+        algorithm_names[i] = g_supported_algorithms[i].name;
+    }
+
+    *algorithms = algorithm_names;
+    *algorithms_count = NUM_SUPPORTED_ALGORITHMS;
+    return 0;
 }
 
 /*! given public key \p pk, generate an RA-TLS certificate \p writecrt with \p quote (legacy format)
@@ -582,14 +653,30 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     if (ret < 0)
         goto out;
 
-    ret = mbedtls_pk_setup(key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+    /* Get algorithm configuration from environment variable or use default */
+    const algorithm_config_t* algo_config = get_algorithm_config();
+
+    ret = mbedtls_pk_setup(key, mbedtls_pk_info_from_type(algo_config->pk_type));
     if (ret < 0)
         goto out;
 
-    ret = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP384R1, mbedtls_pk_ec(*key), mbedtls_ctr_drbg_random,
-                              &ctr_drbg);
-    if (ret < 0)
+    /* Generate key based on algorithm type */
+    if (algo_config->pk_type == MBEDTLS_PK_ECKEY) {
+        /* Generate EC key */
+        ret = mbedtls_ecp_gen_key(algo_config->params.ecp_group_id, mbedtls_pk_ec(*key),
+                                  mbedtls_ctr_drbg_random, &ctr_drbg);
+        if (ret < 0)
+            goto out;
+    } else if (algo_config->pk_type == MBEDTLS_PK_RSA) {
+        /* Generate RSA key */
+        ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(*key), mbedtls_ctr_drbg_random, &ctr_drbg,
+                                  algo_config->params.rsa_key_size, 65537);
+        if (ret < 0)
+            goto out;
+    } else {
+        ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
         goto out;
+    }
 
     ret = create_x509(key, &writecrt);
     if (ret < 0)
