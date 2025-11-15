@@ -142,7 +142,11 @@ typedef struct {
     /* CA certificate fields (for using existing CA to sign) */
     char* ca_key_file;
     char* ca_key_format;  /* "pem" or "der" */
+    char* ca_cert_file;  /* path to existing CA certificate file */
+    char* ca_cert_format;  /* "pem" or "der" */
     char* ca_subject;
+    char* ca_not_before;
+    char* ca_not_after;
 } cert_config_t;
 
 /* Helper function to find JSON string value by key */
@@ -244,7 +248,11 @@ static int parse_json_config(const char* b64_json, cert_config_t* config) {
     /* CA fields (for using existing CA to sign) */
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_key_file", &config->ca_key_file);
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_key_format", &config->ca_key_format);
+    json_get_string((const char*)json_buf, tokens, num_tokens, "ca_cert_file", &config->ca_cert_file);
+    json_get_string((const char*)json_buf, tokens, num_tokens, "ca_cert_format", &config->ca_cert_format);
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_subject", &config->ca_subject);
+    json_get_string((const char*)json_buf, tokens, num_tokens, "ca_not_before", &config->ca_not_before);
+    json_get_string((const char*)json_buf, tokens, num_tokens, "ca_not_after", &config->ca_not_after);
 
     free(json_buf);
     return 0;
@@ -261,7 +269,11 @@ static void free_cert_config(cert_config_t* config) {
     free(config->signature_md);
     free(config->ca_key_file);
     free(config->ca_key_format);
+    free(config->ca_cert_file);
+    free(config->ca_cert_format);
     free(config->ca_subject);
+    free(config->ca_not_before);
+    free(config->ca_not_after);
 }
 
 /* Helper function to parse signature MD algorithm from string */
@@ -744,6 +756,138 @@ out:
     return ret;
 }
 
+/*! Generate a CA certificate using the provided key and configuration */
+static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt* ca_crt,
+                                   const char* ca_subject, const char* ca_not_before,
+                                   const char* ca_not_after, mbedtls_md_type_t md_type,
+                                   mbedtls_ctr_drbg_context* ctr_drbg) {
+    int ret;
+    mbedtls_x509write_cert ca_writecrt;
+    mbedtls_mpi serial;
+    
+    mbedtls_x509write_crt_init(&ca_writecrt);
+    mbedtls_mpi_init(&serial);
+    
+    /* Set MD algorithm */
+    mbedtls_x509write_crt_set_md_alg(&ca_writecrt, md_type);
+    
+    /* Set subject and issuer keys (self-signed) */
+    mbedtls_x509write_crt_set_subject_key(&ca_writecrt, ca_key);
+    mbedtls_x509write_crt_set_issuer_key(&ca_writecrt, ca_key);
+    
+    /* Set subject and issuer names (same for self-signed) */
+    const char* subject = ca_subject ? ca_subject : CERT_SUBJECT_NAME_VALUES;
+    ret = mbedtls_x509write_crt_set_subject_name(&ca_writecrt, subject);
+    if (ret < 0)
+        goto out;
+    
+    ret = mbedtls_x509write_crt_set_issuer_name(&ca_writecrt, subject);
+    if (ret < 0)
+        goto out;
+    
+    /* Set serial number */
+    ret = mbedtls_mpi_read_string(&serial, 10, "1");
+    if (ret < 0)
+        goto out;
+    
+    ret = mbedtls_x509write_crt_set_serial(&ca_writecrt, &serial);
+    if (ret < 0)
+        goto out;
+    
+    /* Set validity period */
+    const char* not_before_str = ca_not_before ? ca_not_before : CERT_TIMESTAMP_NOT_BEFORE_DEFAULT;
+    const char* not_after_str = ca_not_after ? ca_not_after : CERT_TIMESTAMP_NOT_AFTER_DEFAULT;
+    
+    ret = mbedtls_x509write_crt_set_validity(&ca_writecrt, not_before_str, not_after_str);
+    if (ret < 0)
+        goto out;
+    
+    /* Set basic constraints: CA=TRUE */
+    ret = mbedtls_x509write_crt_set_basic_constraints(&ca_writecrt, /*is_ca=*/1, /*max_pathlen=*/-1);
+    if (ret < 0)
+        goto out;
+    
+    /* Set key usage: KEY_CERT_SIGN | CRL_SIGN */
+    ret = mbedtls_x509write_crt_set_key_usage(&ca_writecrt, 
+                                              MBEDTLS_X509_KU_KEY_CERT_SIGN | MBEDTLS_X509_KU_CRL_SIGN);
+    if (ret < 0)
+        goto out;
+    
+    /* Set subject and authority key identifiers */
+    ret = mbedtls_x509write_crt_set_subject_key_identifier(&ca_writecrt);
+    if (ret < 0)
+        goto out;
+    
+    ret = mbedtls_x509write_crt_set_authority_key_identifier(&ca_writecrt);
+    if (ret < 0)
+        goto out;
+    
+    /* Write certificate to DER format */
+    uint8_t ca_cert_buf[4096];
+    int ca_cert_size = mbedtls_x509write_crt_der(&ca_writecrt, ca_cert_buf, sizeof(ca_cert_buf),
+                                                  mbedtls_ctr_drbg_random, ctr_drbg);
+    if (ca_cert_size < 0) {
+        ret = ca_cert_size;
+        goto out;
+    }
+    
+    /* Parse the generated certificate */
+    ret = mbedtls_x509_crt_parse_der(ca_crt, ca_cert_buf + sizeof(ca_cert_buf) - ca_cert_size, 
+                                     ca_cert_size);
+    
+out:
+    mbedtls_x509write_crt_free(&ca_writecrt);
+    mbedtls_mpi_free(&serial);
+    return ret;
+}
+
+/*! Load and verify a CA certificate from file */
+static int load_and_verify_ca_certificate(const char* ca_cert_file, const char* ca_cert_format,
+                                          mbedtls_pk_context* ca_key, mbedtls_x509_crt* ca_crt,
+                                          mbedtls_ctr_drbg_context* ctr_drbg) {
+    int ret;
+    
+    /* Determine format */
+    bool is_pem = !ca_cert_format || strcasecmp(ca_cert_format, "pem") == 0;
+    
+    if (is_pem) {
+        /* Load PEM certificate */
+        ret = mbedtls_x509_crt_parse_file(ca_crt, ca_cert_file);
+    } else {
+        /* Load DER certificate */
+        uint8_t ca_cert_buf[8192];
+        ssize_t ca_cert_len = read_file(ca_cert_file, ca_cert_buf, sizeof(ca_cert_buf));
+        if (ca_cert_len < 0) {
+            return MBEDTLS_ERR_X509_FILE_IO_ERROR;
+        }
+        ret = mbedtls_x509_crt_parse_der(ca_crt, ca_cert_buf, ca_cert_len);
+    }
+    
+    if (ret < 0) {
+        return ret;
+    }
+    
+    /* Verify that the CA certificate's public key matches the provided private key */
+    ret = mbedtls_pk_check_pair(&ca_crt->pk, ca_key, mbedtls_ctr_drbg_random, ctr_drbg);
+    if (ret != 0) {
+        return MBEDTLS_ERR_X509_INVALID_ALG;  /* Key mismatch */
+    }
+    
+    /* Verify that the certificate is a CA certificate using accessor function */
+    int ca_istrue = mbedtls_x509_crt_get_ca_istrue(ca_crt);
+    if (ca_istrue == 0) {
+        return MBEDTLS_ERR_X509_INVALID_EXTENSIONS;  /* Not a CA certificate */
+    }
+    
+    /* Verify that the certificate has KEY_CERT_SIGN in key usage */
+    ret = mbedtls_x509_crt_check_key_usage(ca_crt, MBEDTLS_X509_KU_KEY_CERT_SIGN);
+    if (ret != 0) {
+        return MBEDTLS_ERR_X509_INVALID_EXTENSIONS;  /* Missing KEY_CERT_SIGN */
+    }
+    
+    return 0;
+}
+
 /*! given public key \p pk, generate an RA-TLS certificate \p writecrt */
 static int create_x509(mbedtls_pk_context* pk, mbedtls_x509write_cert* writecrt,
                        mbedtls_pk_context* ca_key, const char* ca_subject,
@@ -894,14 +1038,24 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         }
     }
 
-    /* Load CA key if JSON config has ca_key_file */
+    /* Parse signature MD algorithm (needed before CA cert generation) */
+    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;  /* default */
+    if (use_json && json_config.signature_md) {
+        md_type = parse_signature_md(json_config.signature_md);
+    }
+    
+    /* Handle CA certificate and key if JSON config has ca_key_file */
     mbedtls_pk_context ca_key_ctx;
     mbedtls_pk_context* ca_key_ptr = NULL;
+    mbedtls_x509_crt ca_crt;
+    mbedtls_x509_crt* ca_crt_ptr = NULL;
+    char* ca_subject_from_cert = NULL;
     const char* ca_subject_ptr = NULL;
     
     if (use_json && json_config.ca_key_file) {
         /* Initialize CA key context */
         mbedtls_pk_init(&ca_key_ctx);
+        mbedtls_x509_crt_init(&ca_crt);
         
         /* Load CA key from file */
         bool is_pem = !json_config.ca_key_format || strcasecmp(json_config.ca_key_format, "pem") == 0;
@@ -926,13 +1080,50 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         }
         
         ca_key_ptr = &ca_key_ctx;
-        ca_subject_ptr = json_config.ca_subject;
-    }
-    
-    /* Parse signature MD algorithm */
-    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;  /* default */
-    if (use_json && json_config.signature_md) {
-        md_type = parse_signature_md(json_config.signature_md);
+        
+        /* Case A: Load existing CA certificate if ca_cert_file is provided */
+        if (json_config.ca_cert_file) {
+            ret = load_and_verify_ca_certificate(json_config.ca_cert_file, json_config.ca_cert_format,
+                                                &ca_key_ctx, &ca_crt, &ctr_drbg);
+            if (ret < 0) {
+                mbedtls_pk_free(&ca_key_ctx);
+                mbedtls_x509_crt_free(&ca_crt);
+                goto out_json;
+            }
+            
+            ca_crt_ptr = &ca_crt;
+            
+            /* Extract subject from CA certificate */
+            char subject_buf[256];
+            ret = mbedtls_x509_dn_gets(subject_buf, sizeof(subject_buf), &ca_crt.subject);
+            if (ret > 0) {
+                ca_subject_from_cert = strdup(subject_buf);
+                ca_subject_ptr = ca_subject_from_cert;
+            } else {
+                /* Fallback to JSON ca_subject if extraction fails */
+                ca_subject_ptr = json_config.ca_subject;
+            }
+        }
+        /* Case B: Generate CA certificate if ca_subject is provided but ca_cert_file is not */
+        else if (json_config.ca_subject) {
+            ret = generate_ca_certificate(&ca_key_ctx, &ca_crt, json_config.ca_subject,
+                                         json_config.ca_not_before, json_config.ca_not_after,
+                                         md_type, &ctr_drbg);
+            if (ret < 0) {
+                mbedtls_pk_free(&ca_key_ctx);
+                mbedtls_x509_crt_free(&ca_crt);
+                goto out_json;
+            }
+            
+            ca_crt_ptr = &ca_crt;
+            ca_subject_ptr = json_config.ca_subject;
+        }
+        /* Error: ca_key provided but neither ca_cert_file nor ca_subject */
+        else {
+            mbedtls_pk_free(&ca_key_ctx);
+            ret = MBEDTLS_ERR_X509_BAD_INPUT_DATA;
+            goto out_json;
+        }
     }
     
     /* Get is_ca flag from JSON config (default: false) */
@@ -945,10 +1136,14 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     
     ret = create_x509(key, &writecrt, ca_key_ptr, ca_subject_ptr, subject, not_before, not_after, md_type, is_ca);
     
-    /* Clean up CA key if used */
+    /* Clean up CA resources if used */
     if (ca_key_ptr) {
         mbedtls_pk_free(&ca_key_ctx);
     }
+    if (ca_crt_ptr) {
+        mbedtls_x509_crt_free(&ca_crt);
+    }
+    free(ca_subject_from_cert);
     
     if (ret < 0)
         goto out_json;
