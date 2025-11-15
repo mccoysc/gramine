@@ -744,42 +744,27 @@ static int generate_ratls_credentials(void)
 
     printf("[RA-TLS SO] Saved certificate: %s\n", cert_path);
 
-    /* Free the in-memory certificate data before reading from file */
+    /* Verify the generated certificate using the in-memory DER buffer */
+    printf("[RA-TLS SO] Verifying generated certificate...\n");
+    
+    struct ra_tls_verify_callback_results verify_callback_results = {0};
+    ret = ra_tls_verify_callback_extended_der((uint8_t*)crt_der, crt_der_size, &verify_callback_results);
+    if (ret < 0)
+    {
+        fprintf(stderr, "[RA-TLS SO] Generated certificate verification failed: %d\n", ret);
+        fprintf(stderr, "[RA-TLS SO] VERIFY ERROR LOCTION: %d\n", verify_callback_results.err_loc);
+        fprintf(stderr, "[RA-TLS SO] VERIFY SCHEMA: %d\n", verify_callback_results.attestation_scheme);
+        fprintf(stderr, "[RA-TLS SO] VERIFY QUOTE RETURN: %d\n", verify_callback_results.dcap.func_verify_quote_result);
+        fprintf(stderr, "[RA-TLS SO] VERIFY QUOTE RESULT: %d\n", verify_callback_results.dcap.quote_verification_result);
+        goto err;
+    }
+
+    /* Free the in-memory certificate data */
     free(key_der);
     free(crt_der);
     free(key_pem);
     free(crt_pem);
-    key_der = NULL;
-    crt_der = NULL;
-    key_pem = NULL;
-    crt_pem = NULL;
-
-    /* Verify the created certificate by reading from the saved file */
-    printf("[RA-TLS SO] Verifying generated certificate from file...\n");
     
-     /* Use mbedTLS to parse the certificate file and verify it */
-    mbedtls_x509_crt cert;
-    mbedtls_x509_crt_init(&cert);
-    
-    ret = mbedtls_x509_crt_parse_file(&cert, cert_path);
-    if (ret < 0)
-    {
-        fprintf(stderr, "[RA-TLS SO] Failed to parse certificate file %s: %d\n", cert_path, ret);
-        mbedtls_x509_crt_free(&cert);
-        return -1;
-    }
-    struct ra_tls_verify_callback_results verify_callback_results={0};
-    ret = ra_tls_verify_callback_extended_der((uint8_t*)cert.raw.p, cert.raw.len, &verify_callback_results);
-    mbedtls_x509_crt_free(&cert);
-    if (ret < 0)
-    {
-        fprintf(stderr, "[RA-TLS SO] Generated certificate verification failed: %d\n", ret);
-        fprintf(stderr,"[RA-TLS SO] VERIFY ERROR LOCTION: %d\n", verify_callback_results.err_loc);
-        fprintf(stderr,"[RA-TLS SO] VERIFY SCHEMA: %d\n", verify_callback_results.attestation_scheme);
-        fprintf(stderr,"[RA-TLS SO] VERIFY QUOTE RETURN: %d\n", verify_callback_results.dcap.func_verify_quote_result);
-        fprintf(stderr,"[RA-TLS SO] VERIFY QUOTE RESULT: %d\n", verify_callback_results.dcap.quote_verification_result);
-        return ret;
-    }
     return 0;
 
 err:
