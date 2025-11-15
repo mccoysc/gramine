@@ -148,7 +148,10 @@ int ra_tls_verify_callback_extended_der(uint8_t* der_crt, size_t der_crt_size,
  * - "subject": certificate subject DN
  * - "not_before": certificate validity start (YYYYMMDDhhmmss)
  * - "not_after": certificate validity end (YYYYMMDDhhmmss)
- * - "signature_md": signature hash algorithm ("sha256", "sha384", "sha512")
+ * - "signature_md": signature hash algorithm ("sha256", "sha384", "sha512", default: "sha256")
+ * - "ca_key_file": path to CA private key file for signing (optional, if not specified generates self-signed cert)
+ * - "ca_key_format": "pem" or "der" for CA key
+ * - "ca_subject": CA certificate subject DN
  *
  * The function calculates the SHA256 hash over the public key and retrieves an SGX quote with
  * report_data equal to the calculated hash (this ties the certificate key to the SGX quote).
