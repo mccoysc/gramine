@@ -1047,15 +1047,21 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     /* Handle CA certificate and key if JSON config has ca_key_file */
     mbedtls_pk_context ca_key_ctx;
     mbedtls_pk_context* ca_key_ptr = NULL;
-    mbedtls_x509_crt ca_crt;
+    mbedtls_x509_crt* ca_crt_heap = NULL;  /* Heap-allocated to attach to chain */
     mbedtls_x509_crt* ca_crt_ptr = NULL;
     char* ca_subject_from_cert = NULL;
     const char* ca_subject_ptr = NULL;
+    bool ca_was_generated = false;  /* Track if CA was generated (not loaded) */
     
     if (use_json && json_config.ca_key_file) {
-        /* Initialize CA key context */
+        /* Initialize CA key context and allocate CA cert on heap */
         mbedtls_pk_init(&ca_key_ctx);
-        mbedtls_x509_crt_init(&ca_crt);
+        ca_crt_heap = malloc(sizeof(mbedtls_x509_crt));
+        if (!ca_crt_heap) {
+            ret = MBEDTLS_ERR_X509_ALLOC_FAILED;
+            goto out_json;
+        }
+        mbedtls_x509_crt_init(ca_crt_heap);
         
         /* Load CA key from file */
         bool is_pem = !json_config.ca_key_format || strcasecmp(json_config.ca_key_format, "pem") == 0;
@@ -1076,6 +1082,9 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         }
         if (ret < 0) {
             mbedtls_pk_free(&ca_key_ctx);
+            mbedtls_x509_crt_free(ca_crt_heap);
+            free(ca_crt_heap);
+            ca_crt_heap = NULL;
             goto out_json;
         }
         
@@ -1084,18 +1093,21 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         /* Case A: Load existing CA certificate if ca_cert_file is provided */
         if (json_config.ca_cert_file) {
             ret = load_and_verify_ca_certificate(json_config.ca_cert_file, json_config.ca_cert_format,
-                                                &ca_key_ctx, &ca_crt, &ctr_drbg);
+                                                &ca_key_ctx, ca_crt_heap, &ctr_drbg);
             if (ret < 0) {
                 mbedtls_pk_free(&ca_key_ctx);
-                mbedtls_x509_crt_free(&ca_crt);
+                mbedtls_x509_crt_free(ca_crt_heap);
+                free(ca_crt_heap);
+                ca_crt_heap = NULL;
                 goto out_json;
             }
             
-            ca_crt_ptr = &ca_crt;
+            ca_crt_ptr = ca_crt_heap;
+            ca_was_generated = false;
             
             /* Extract subject from CA certificate */
             char subject_buf[256];
-            ret = mbedtls_x509_dn_gets(subject_buf, sizeof(subject_buf), &ca_crt.subject);
+            ret = mbedtls_x509_dn_gets(subject_buf, sizeof(subject_buf), &ca_crt_heap->subject);
             if (ret > 0) {
                 ca_subject_from_cert = strdup(subject_buf);
                 ca_subject_ptr = ca_subject_from_cert;
@@ -1106,21 +1118,27 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         }
         /* Case B: Generate CA certificate if ca_subject is provided but ca_cert_file is not */
         else if (json_config.ca_subject) {
-            ret = generate_ca_certificate(&ca_key_ctx, &ca_crt, json_config.ca_subject,
+            ret = generate_ca_certificate(&ca_key_ctx, ca_crt_heap, json_config.ca_subject,
                                          json_config.ca_not_before, json_config.ca_not_after,
                                          md_type, &ctr_drbg);
             if (ret < 0) {
                 mbedtls_pk_free(&ca_key_ctx);
-                mbedtls_x509_crt_free(&ca_crt);
+                mbedtls_x509_crt_free(ca_crt_heap);
+                free(ca_crt_heap);
+                ca_crt_heap = NULL;
                 goto out_json;
             }
             
-            ca_crt_ptr = &ca_crt;
+            ca_crt_ptr = ca_crt_heap;
             ca_subject_ptr = json_config.ca_subject;
+            ca_was_generated = true;
         }
         /* Error: ca_key provided but neither ca_cert_file nor ca_subject */
         else {
             mbedtls_pk_free(&ca_key_ctx);
+            mbedtls_x509_crt_free(ca_crt_heap);
+            free(ca_crt_heap);
+            ca_crt_heap = NULL;
             ret = MBEDTLS_ERR_X509_BAD_INPUT_DATA;
             goto out_json;
         }
@@ -1136,17 +1154,21 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     
     ret = create_x509(key, &writecrt, ca_key_ptr, ca_subject_ptr, subject, not_before, not_after, md_type, is_ca);
     
-    /* Clean up CA resources if used */
+    /* Clean up CA key (but keep ca_crt_heap for chain linking) */
     if (ca_key_ptr) {
         mbedtls_pk_free(&ca_key_ctx);
     }
-    if (ca_crt_ptr) {
-        mbedtls_x509_crt_free(&ca_crt);
-    }
     free(ca_subject_from_cert);
     
-    if (ret < 0)
+    if (ret < 0) {
+        /* On error, clean up CA cert */
+        if (ca_crt_heap) {
+            mbedtls_x509_crt_free(ca_crt_heap);
+            free(ca_crt_heap);
+            ca_crt_heap = NULL;
+        }
         goto out_json;
+    }
 
     int size = mbedtls_x509write_crt_der(&writecrt, output_buf, output_buf_size,
                                          mbedtls_ctr_drbg_random, &ctr_drbg);
@@ -1170,8 +1192,31 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
 
     if (crt) {
         ret = mbedtls_x509_crt_parse_der(crt, output_buf + output_buf_size - size, size);
-        if (ret < 0)
+        if (ret < 0) {
+            /* On error, clean up CA cert */
+            if (ca_crt_heap) {
+                mbedtls_x509_crt_free(ca_crt_heap);
+                free(ca_crt_heap);
+                ca_crt_heap = NULL;
+            }
             goto out_json;
+        }
+        
+        /* Form certificate chain by linking CA cert to leaf cert */
+        if (ca_crt_ptr) {
+            crt->next = ca_crt_heap;
+            ca_crt_heap = NULL;  /* Ownership transferred to chain */
+            
+            /* Write generated CA certificate to file */
+            if (ca_was_generated && crt->next) {
+                /* CA cert is already in DER format in the chain, extract and write it */
+                /* The raw DER data is in crt->next->raw.p with length crt->next->raw.len */
+                if (crt->next->raw.p && crt->next->raw.len > 0) {
+                    write_file("ca.crt", crt->next->raw.p, crt->next->raw.len);
+                }
+                /* Ignore errors writing CA cert file - not critical */
+            }
+        }
     }
 
     ret = 0;
