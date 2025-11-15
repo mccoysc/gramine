@@ -6,6 +6,9 @@ const isBrowser = typeof window !== 'undefined';
 
 // 第三方库导入
 if (isBrowser) {
+    let script=document.createElement("script");
+    script.src="dependencies.js";
+    document.body.appendChild(script);
 } else {
     // Node.js环境
     global.forge = require('node-forge');
