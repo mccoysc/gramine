@@ -268,6 +268,7 @@ async function verifyQuote(input, options = {}) {
         tcbLevel: { verified: false, error: null, status: null },
         measurementPolicy: { verified: false, error: null }
     };
+    verified=true;
 
     let quoteData = null;
     let collateral = null;
@@ -311,6 +312,7 @@ async function verifyQuote(input, options = {}) {
                 await verifyRaTlsBinding(certPem, quoteData);
                 verificationDetails.raTlsBinding.verified = true;
             } catch (error) {
+                verified=false;
                 verificationDetails.raTlsBinding.error = error.message;
                 //throw error;
             }
@@ -323,6 +325,7 @@ async function verifyQuote(input, options = {}) {
             verificationDetails.tcbLevel.verified = true;
             verificationDetails.tcbLevel.status = tcbStatusToString(tcbStatus);
         } catch (error) {
+            verified=false;
             verificationDetails.tcbLevel.error = error.message;
             //throw error;
         }
@@ -334,6 +337,7 @@ async function verifyQuote(input, options = {}) {
             verificationDetails.qeReportSignature.verified = true;
             verificationDetails.qeIdentityMatch.verified = true;
         } catch (error) {
+            verified=false;
             verificationDetails.quoteSignature.error = error.message;
             //throw error;
         }
@@ -342,6 +346,7 @@ async function verifyQuote(input, options = {}) {
             verifyEnclaveAttributes(quoteData, allowDebugEnclave);
             verificationDetails.enclaveAttributes.verified = true;
         } catch (error) {
+            verified=false;
             verificationDetails.enclaveAttributes.error = error.message;
             //throw error;
         }
@@ -362,6 +367,7 @@ async function verifyQuote(input, options = {}) {
             });
             verificationDetails.measurementPolicy.verified = true;
         } catch (error) {
+            verified=false;
             verificationDetails.measurementPolicy.error = error.message;
             //throw error;
         }
@@ -381,7 +387,7 @@ async function verifyQuote(input, options = {}) {
         }
 
         return {
-            verified: true,
+            verified: verified,
             verificationResult,
             verificationDetails,
             measurements: {
