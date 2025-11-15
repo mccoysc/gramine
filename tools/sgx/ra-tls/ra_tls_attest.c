@@ -138,6 +138,7 @@ typedef struct {
     char* not_before;
     char* not_after;
     char* signature_md;
+    bool is_ca;  /* whether to mark the generated certificate as a CA certificate */
     /* CA certificate fields (for using existing CA to sign) */
     char* ca_key_file;
     char* ca_key_format;  /* "pem" or "der" */
@@ -158,6 +159,32 @@ static int json_get_string(const char* json, jsmntok_t* tokens, int num_tokens,
                     int val_len = tokens[i].end - tokens[i].start;
                     *out_value = strndup(json + tokens[i].start, val_len);
                     return *out_value ? 0 : -ENOMEM;
+                }
+            }
+        }
+    }
+    return -ENOENT;
+}
+
+/* Helper function to find JSON boolean value by key */
+static int json_get_bool(const char* json, jsmntok_t* tokens, int num_tokens,
+                         const char* key, bool* out_value) {
+    for (int i = 0; i < num_tokens - 1; i++) {
+        if (tokens[i].type == JSMN_STRING) {
+            int key_len = tokens[i].end - tokens[i].start;
+            if (strncmp(json + tokens[i].start, key, key_len) == 0 &&
+                strlen(key) == (size_t)key_len) {
+                /* Found the key, next token is the value */
+                i++;
+                if (tokens[i].type == JSMN_PRIMITIVE) {
+                    int val_len = tokens[i].end - tokens[i].start;
+                    if (val_len == 4 && strncmp(json + tokens[i].start, "true", 4) == 0) {
+                        *out_value = true;
+                        return 0;
+                    } else if (val_len == 5 && strncmp(json + tokens[i].start, "false", 5) == 0) {
+                        *out_value = false;
+                        return 0;
+                    }
                 }
             }
         }
@@ -213,6 +240,7 @@ static int parse_json_config(const char* b64_json, cert_config_t* config) {
     json_get_string((const char*)json_buf, tokens, num_tokens, "not_before", &config->not_before);
     json_get_string((const char*)json_buf, tokens, num_tokens, "not_after", &config->not_after);
     json_get_string((const char*)json_buf, tokens, num_tokens, "signature_md", &config->signature_md);
+    json_get_bool((const char*)json_buf, tokens, num_tokens, "is_ca", &config->is_ca);
     /* CA fields (for using existing CA to sign) */
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_key_file", &config->ca_key_file);
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_key_format", &config->ca_key_format);
@@ -263,7 +291,7 @@ static int generate_x509(mbedtls_pk_context* pk, const uint8_t* quote, size_t qu
                          mbedtls_x509write_cert* writecrt,
                          mbedtls_pk_context* ca_key, const char* ca_subject_name,
                          const char* subject_name, const char* not_before, const char* not_after,
-                         mbedtls_md_type_t md_type) {
+                         mbedtls_md_type_t md_type, bool is_ca) {
     int ret;
     char* cert_timestamp_not_before = NULL;
     char* cert_timestamp_not_after  = NULL;
@@ -333,7 +361,7 @@ static int generate_x509(mbedtls_pk_context* pk, const uint8_t* quote, size_t qu
     if (ret < 0)
         goto out;
 
-    ret = mbedtls_x509write_crt_set_basic_constraints(writecrt, /*is_ca=*/0, /*max_pathlen=*/-1);
+    ret = mbedtls_x509write_crt_set_basic_constraints(writecrt, is_ca ? 1 : 0, /*max_pathlen=*/-1);
     if (ret < 0)
         goto out;
 
@@ -720,7 +748,7 @@ out:
 static int create_x509(mbedtls_pk_context* pk, mbedtls_x509write_cert* writecrt,
                        mbedtls_pk_context* ca_key, const char* ca_subject,
                        const char* subject, const char* not_before, const char* not_after,
-                       mbedtls_md_type_t md_type) {
+                       mbedtls_md_type_t md_type, bool is_ca) {
     int ret;
 
     /*
@@ -746,7 +774,7 @@ static int create_x509(mbedtls_pk_context* pk, mbedtls_x509write_cert* writecrt,
      *       should be added in the future */
 
     ret = generate_x509(pk, quote, quote_size, evidence, evidence_size, writecrt,
-                       ca_key, ca_subject, subject, not_before, not_after, md_type);
+                       ca_key, ca_subject, subject, not_before, not_after, md_type, is_ca);
 out:
     free(quote);
     free(evidence);
@@ -907,12 +935,15 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         md_type = parse_signature_md(json_config.signature_md);
     }
     
+    /* Get is_ca flag from JSON config (default: false) */
+    bool is_ca = use_json && json_config.is_ca;
+    
     /* Create RA-TLS certificate (self-signed or CA-signed) */
     const char* subject = (use_json && json_config.subject) ? json_config.subject : NULL;
     const char* not_before = (use_json && json_config.not_before) ? json_config.not_before : NULL;
     const char* not_after = (use_json && json_config.not_after) ? json_config.not_after : NULL;
     
-    ret = create_x509(key, &writecrt, ca_key_ptr, ca_subject_ptr, subject, not_before, not_after, md_type);
+    ret = create_x509(key, &writecrt, ca_key_ptr, ca_subject_ptr, subject, not_before, not_after, md_type, is_ca);
     
     /* Clean up CA key if used */
     if (ca_key_ptr) {
