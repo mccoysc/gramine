@@ -983,6 +983,8 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
     int ret;
     mbedtls_x509write_cert ca_writecrt;
     mbedtls_mpi serial;
+    uint8_t* quote = NULL;
+    uint8_t* evidence = NULL;
     
     printf("RA-TLS: generate_ca_certificate() called\n");
     printf("RA-TLS:   CA subject: %s\n", ca_subject ? ca_subject : "(null)");
@@ -993,6 +995,22 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
     
     mbedtls_x509write_crt_init(&ca_writecrt);
     mbedtls_mpi_init(&serial);
+    
+    /* Generate SGX quote with CA key hash (same as user certificate) */
+    printf("RA-TLS: Generating SGX quote for CA certificate\n");
+    size_t quote_size;
+    ret = generate_quote_with_pk_hash(ca_key, &quote, &quote_size);
+    if (ret < 0) {
+        printf("RA-TLS: Failed to generate quote for CA certificate\n");
+        goto out;
+    }
+    
+    size_t evidence_size;
+    ret = generate_tcg_dice_tagged_evidence(ca_key, &evidence, &evidence_size);
+    if (ret < 0) {
+        printf("RA-TLS: Failed to generate TCG DICE evidence for CA certificate\n");
+        goto out;
+    }
     
     /* Set MD algorithm */
     mbedtls_x509write_crt_set_md_alg(&ca_writecrt, md_type);
@@ -1049,6 +1067,24 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
     if (ret < 0)
         goto out;
     
+    /* Add SGX quote extensions (same as user certificate) */
+    printf("RA-TLS: Adding SGX quote extensions to CA certificate\n");
+    ret = mbedtls_x509write_crt_set_extension(&ca_writecrt, (const char*)g_ratls_quote_oid,
+                                              sizeof(g_ratls_quote_oid), /*critical=*/0,
+                                              quote, quote_size);
+    if (ret < 0) {
+        log_mbedtls_error("CA certificate: set SGX quote extension", ret);
+        goto out;
+    }
+    
+    ret = mbedtls_x509write_crt_set_extension(&ca_writecrt, (const char*)g_ratls_evidence_oid,
+                                              sizeof(g_ratls_evidence_oid), /*critical=*/0,
+                                              evidence, evidence_size);
+    if (ret < 0) {
+        log_mbedtls_error("CA certificate: set TCG DICE evidence extension", ret);
+        goto out;
+    }
+    
     /* Write certificate to DER format */
     printf("RA-TLS: ========== Writing CA Certificate to DER ==========\n");
     printf("RA-TLS:   Issuer key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(ca_key)));
@@ -1069,7 +1105,7 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
     printf("RA-TLS:   Signature MD: %s (type=%d)\n", get_md_name(md_type), md_type);
     printf("RA-TLS: ===================================================\n");
     
-    uint8_t ca_cert_buf[4096];
+    uint8_t ca_cert_buf[8192];  /* Increased size to accommodate SGX quote extensions */
     int ca_cert_size = mbedtls_x509write_crt_der(&ca_writecrt, ca_cert_buf, sizeof(ca_cert_buf),
                                                   mbedtls_ctr_drbg_random, ctr_drbg);
     if (ca_cert_size < 0) {
@@ -1088,9 +1124,11 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
         goto out;
     }
     
-    printf("RA-TLS: CA certificate generated successfully\n");
+    printf("RA-TLS: CA certificate generated successfully (with SGX quote)\n");
     
 out:
+    free(quote);
+    free(evidence);
     mbedtls_x509write_crt_free(&ca_writecrt);
     mbedtls_mpi_free(&serial);
     return ret;
@@ -1374,7 +1412,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         printf("RA-TLS: User-specified signature MD algorithm: %s\n", get_md_name(md_type));
     }
     
-    /* Handle CA certificate and key if JSON config has ca_key_file or ca_subject */
+    /* Handle CA certificate and key if JSON config has ca_key_file or ca_cert_file or ca_subject */
     printf("RA-TLS: ========== CA Certificate Handling ==========\n");
     mbedtls_pk_context ca_key_ctx;
     mbedtls_pk_context* ca_key_ptr = NULL;
@@ -1386,10 +1424,43 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     char* ca_key_file_path = NULL;  /* Path where CA key was written */
     char* ca_cert_file_path = NULL;  /* Path where CA cert was written */
     
+    /* Check if CA key file exists */
+    bool ca_key_file_exists = false;
+    bool ca_cert_file_exists = false;
+    
     if (use_json && json_config.ca_key_file) {
-        printf("RA-TLS: CA key file specified: %s\n", json_config.ca_key_file);
-        printf("RA-TLS: CA key format: %s\n", json_config.ca_key_format ? json_config.ca_key_format : "pem (default)");
-        
+        /* Check if CA key file exists */
+        int fd = open(json_config.ca_key_file, O_RDONLY);
+        if (fd >= 0) {
+            ca_key_file_exists = true;
+            close(fd);
+            printf("RA-TLS: CA key file exists: %s\n", json_config.ca_key_file);
+        } else {
+            printf("RA-TLS: CA key file does not exist (will be treated as path specification): %s\n", 
+                   json_config.ca_key_file);
+        }
+    }
+    
+    if (use_json && json_config.ca_cert_file) {
+        /* Check if CA cert file exists */
+        int fd = open(json_config.ca_cert_file, O_RDONLY);
+        if (fd >= 0) {
+            ca_cert_file_exists = true;
+            close(fd);
+            printf("RA-TLS: CA cert file exists: %s\n", json_config.ca_cert_file);
+        } else {
+            printf("RA-TLS: CA cert file does not exist (will be treated as path specification): %s\n", 
+                   json_config.ca_cert_file);
+        }
+    }
+    
+    /* Determine if we should use CA logic:
+     * - If ca_key_file is set (regardless of whether file exists)
+     * - OR if ca_cert_file is set (regardless of whether file exists)
+     * - OR if ca_subject is set */
+    bool use_ca_logic = (use_json && (json_config.ca_key_file || json_config.ca_cert_file || json_config.ca_subject));
+    
+    if (use_ca_logic) {
         /* Initialize CA key context and allocate CA cert on heap */
         mbedtls_pk_init(&ca_key_ctx);
         ca_crt_heap = malloc(sizeof(mbedtls_x509_crt));
@@ -1400,51 +1471,48 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         }
         mbedtls_x509_crt_init(ca_crt_heap);
         
-        /* Load CA key from file */
-        printf("RA-TLS: Loading CA key from file...\n");
-        bool is_pem = !json_config.ca_key_format || strcasecmp(json_config.ca_key_format, "pem") == 0;
-        if (is_pem) {
-            ret = mbedtls_pk_parse_keyfile(&ca_key_ctx, json_config.ca_key_file, /*password=*/NULL,
+        /* ONLY scenario where we don't regenerate CA cert: both CA key and CA cert files exist */
+        bool load_existing_ca = ca_key_file_exists && ca_cert_file_exists;
+        
+        if (load_existing_ca) {
+            printf("RA-TLS: Both CA key and CA cert files exist - loading existing CA\n");
+            
+            /* Load CA key from file */
+            printf("RA-TLS: Loading CA key from file: %s\n", json_config.ca_key_file);
+            bool is_pem = !json_config.ca_key_format || strcasecmp(json_config.ca_key_format, "pem") == 0;
+            if (is_pem) {
+                ret = mbedtls_pk_parse_keyfile(&ca_key_ctx, json_config.ca_key_file, /*password=*/NULL,
+                                               mbedtls_ctr_drbg_random, &ctr_drbg);
+            } else {
+                /* DER format - read file and parse */
+                uint8_t ca_key_buf[8192];
+                ssize_t ca_key_len = read_file(json_config.ca_key_file, ca_key_buf, sizeof(ca_key_buf));
+                if (ca_key_len < 0) {
+                    printf("RA-TLS: Failed to read CA key file: %s (errno=%d)\n", json_config.ca_key_file, errno);
+                    ret = MBEDTLS_ERR_PK_FILE_IO_ERROR;
+                    mbedtls_pk_free(&ca_key_ctx);
+                    mbedtls_x509_crt_free(ca_crt_heap);
+                    free(ca_crt_heap);
+                    ca_crt_heap = NULL;
+                    goto out_json;
+                }
+                ret = mbedtls_pk_parse_key(&ca_key_ctx, ca_key_buf, ca_key_len, /*password=*/NULL, 0,
                                            mbedtls_ctr_drbg_random, &ctr_drbg);
-        } else {
-            /* DER format - read file and parse */
-            uint8_t ca_key_buf[8192];
-            ssize_t ca_key_len = read_file(json_config.ca_key_file, ca_key_buf, sizeof(ca_key_buf));
-            if (ca_key_len < 0) {
-                printf("RA-TLS: Failed to read CA key file: %s (errno=%d)\n", json_config.ca_key_file, errno);
-                ret = MBEDTLS_ERR_PK_FILE_IO_ERROR;
+            }
+            if (ret < 0) {
+                log_mbedtls_error("Load CA key from file", ret);
                 mbedtls_pk_free(&ca_key_ctx);
                 mbedtls_x509_crt_free(ca_crt_heap);
                 free(ca_crt_heap);
                 ca_crt_heap = NULL;
                 goto out_json;
             }
-            ret = mbedtls_pk_parse_key(&ca_key_ctx, ca_key_buf, ca_key_len, /*password=*/NULL, 0,
-                                       mbedtls_ctr_drbg_random, &ctr_drbg);
-        }
-        if (ret < 0) {
-            log_mbedtls_error("Load CA key from file", ret);
-            mbedtls_pk_free(&ca_key_ctx);
-            mbedtls_x509_crt_free(ca_crt_heap);
-            free(ca_crt_heap);
-            ca_crt_heap = NULL;
-            goto out_json;
-        }
-        
-        printf("RA-TLS: CA key loaded successfully, type=%s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
-        ca_key_ptr = &ca_key_ctx;
-        
-        /* Note: signature_md from JSON config applies to leaf certificate only.
-         * CA certificate will always auto-detect the correct hash based on CA key. */
-        if (json_config.signature_md) {
-            printf("RA-TLS: User-specified signature_md for leaf certificate: %s\n", get_md_name(md_type));
-        } else {
-            printf("RA-TLS: No signature_md specified, will auto-detect for leaf certificate\n");
-        }
-        
-        /* Case A: Load existing CA certificate if ca_cert_file is provided */
-        if (json_config.ca_cert_file) {
-            printf("RA-TLS: Case A: Loading existing CA certificate from file\n");
+            
+            printf("RA-TLS: CA key loaded successfully, type=%s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
+            ca_key_ptr = &ca_key_ctx;
+            
+            /* Load existing CA certificate */
+            printf("RA-TLS: Loading existing CA certificate from file: %s\n", json_config.ca_cert_file);
             ret = load_and_verify_ca_certificate(json_config.ca_cert_file, json_config.ca_cert_format,
                                                 &ca_key_ctx, ca_crt_heap, &ctr_drbg);
             if (ret < 0) {
@@ -1467,23 +1535,210 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                 ca_subject_ptr = ca_subject_from_cert;
                 printf("RA-TLS: Using CA subject from certificate: %s\n", ca_subject_ptr);
             } else {
-                /* Fallback to JSON ca_subject if extraction fails */
-                ca_subject_ptr = json_config.ca_subject;
-                printf("RA-TLS: Failed to extract CA subject, using JSON ca_subject: %s\n", 
-                       ca_subject_ptr ? ca_subject_ptr : "(null)");
+                /* Fallback to JSON ca_subject or default */
+                ca_subject_ptr = json_config.ca_subject ? json_config.ca_subject : CERT_SUBJECT_NAME_VALUES;
+                printf("RA-TLS: Failed to extract CA subject, using fallback: %s\n", ca_subject_ptr);
             }
-        }
-        /* Case B: Generate CA certificate if ca_subject is provided but ca_cert_file is not */
-        else if (json_config.ca_subject) {
-            printf("RA-TLS: Case B: Generating new CA certificate\n");
+        } else {
+            /* Need to generate CA certificate - all other cases */
+            printf("RA-TLS: Need to generate CA certificate\n");
             
-            /* CA certificate must use hash that matches CA key, not user-specified signature_md */
+            /* Determine CA subject, not_before, not_after */
+            const char* ca_subject_to_use = NULL;
+            const char* ca_not_before_to_use = NULL;
+            const char* ca_not_after_to_use = NULL;
+            
+            /* If CA cert file exists (but CA key doesn't), read its info before overwriting */
+            if (ca_cert_file_exists && !ca_key_file_exists) {
+                printf("RA-TLS: CA cert exists but CA key doesn't - reading existing CA cert info\n");
+                mbedtls_x509_crt temp_ca_crt;
+                mbedtls_x509_crt_init(&temp_ca_crt);
+                
+                bool is_pem = !json_config.ca_cert_format || strcasecmp(json_config.ca_cert_format, "pem") == 0;
+                int temp_ret;
+                if (is_pem) {
+                    temp_ret = mbedtls_x509_crt_parse_file(&temp_ca_crt, json_config.ca_cert_file);
+                } else {
+                    uint8_t temp_cert_buf[8192];
+                    ssize_t temp_cert_len = read_file(json_config.ca_cert_file, temp_cert_buf, sizeof(temp_cert_buf));
+                    if (temp_cert_len > 0) {
+                        temp_ret = mbedtls_x509_crt_parse_der(&temp_ca_crt, temp_cert_buf, temp_cert_len);
+                    } else {
+                        temp_ret = -1;
+                    }
+                }
+                
+                if (temp_ret == 0) {
+                    /* Successfully loaded old CA cert - extract info */
+                    char subject_buf[256];
+                    temp_ret = mbedtls_x509_dn_gets(subject_buf, sizeof(subject_buf), &temp_ca_crt.subject);
+                    if (temp_ret > 0) {
+                        ca_subject_from_cert = strdup(subject_buf);
+                        ca_subject_to_use = ca_subject_from_cert;
+                        printf("RA-TLS: Extracted CA subject from existing cert: %s\n", ca_subject_to_use);
+                    }
+                    
+                    /* Extract validity period */
+                    char not_before_buf[32];
+                    char not_after_buf[32];
+                    snprintf(not_before_buf, sizeof(not_before_buf), "%04d%02d%02d%02d%02d%02d",
+                            temp_ca_crt.valid_from.year, temp_ca_crt.valid_from.mon, temp_ca_crt.valid_from.day,
+                            temp_ca_crt.valid_from.hour, temp_ca_crt.valid_from.min, temp_ca_crt.valid_from.sec);
+                    snprintf(not_after_buf, sizeof(not_after_buf), "%04d%02d%02d%02d%02d%02d",
+                            temp_ca_crt.valid_to.year, temp_ca_crt.valid_to.mon, temp_ca_crt.valid_to.day,
+                            temp_ca_crt.valid_to.hour, temp_ca_crt.valid_to.min, temp_ca_crt.valid_to.sec);
+                    
+                    /* Allocate and copy validity strings */
+                    char* not_before_copy = strdup(not_before_buf);
+                    char* not_after_copy = strdup(not_after_buf);
+                    if (not_before_copy && not_after_copy) {
+                        ca_not_before_to_use = not_before_copy;
+                        ca_not_after_to_use = not_after_copy;
+                        printf("RA-TLS: Extracted CA validity: %s to %s\n", ca_not_before_to_use, ca_not_after_to_use);
+                    }
+                } else {
+                    printf("RA-TLS: Failed to read existing CA cert, will use defaults\n");
+                }
+                
+                mbedtls_x509_crt_free(&temp_ca_crt);
+            }
+            
+            /* Apply fallbacks for CA subject and validity */
+            if (!ca_subject_to_use) {
+                ca_subject_to_use = json_config.ca_subject ? json_config.ca_subject : CERT_SUBJECT_NAME_VALUES;
+                printf("RA-TLS: Using CA subject: %s\n", ca_subject_to_use);
+            }
+            if (!ca_not_before_to_use) {
+                ca_not_before_to_use = json_config.ca_not_before;
+            }
+            if (!ca_not_after_to_use) {
+                ca_not_after_to_use = json_config.ca_not_after;
+            }
+            
+            ca_subject_ptr = ca_subject_to_use;
+            
+            /* Determine if we need to load or generate CA key */
+            if (ca_key_file_exists) {
+                /* Load existing CA key */
+                printf("RA-TLS: Loading existing CA key from file: %s\n", json_config.ca_key_file);
+                bool is_pem = !json_config.ca_key_format || strcasecmp(json_config.ca_key_format, "pem") == 0;
+                if (is_pem) {
+                    ret = mbedtls_pk_parse_keyfile(&ca_key_ctx, json_config.ca_key_file, /*password=*/NULL,
+                                                   mbedtls_ctr_drbg_random, &ctr_drbg);
+                } else {
+                    uint8_t ca_key_buf[8192];
+                    ssize_t ca_key_len = read_file(json_config.ca_key_file, ca_key_buf, sizeof(ca_key_buf));
+                    if (ca_key_len < 0) {
+                        printf("RA-TLS: Failed to read CA key file: %s (errno=%d)\n", json_config.ca_key_file, errno);
+                        ret = MBEDTLS_ERR_PK_FILE_IO_ERROR;
+                        mbedtls_pk_free(&ca_key_ctx);
+                        mbedtls_x509_crt_free(ca_crt_heap);
+                        free(ca_crt_heap);
+                        ca_crt_heap = NULL;
+                        goto out_json;
+                    }
+                    ret = mbedtls_pk_parse_key(&ca_key_ctx, ca_key_buf, ca_key_len, /*password=*/NULL, 0,
+                                               mbedtls_ctr_drbg_random, &ctr_drbg);
+                }
+                if (ret < 0) {
+                    log_mbedtls_error("Load CA key from file", ret);
+                    mbedtls_pk_free(&ca_key_ctx);
+                    mbedtls_x509_crt_free(ca_crt_heap);
+                    free(ca_crt_heap);
+                    ca_crt_heap = NULL;
+                    goto out_json;
+                }
+                printf("RA-TLS: CA key loaded successfully, type=%s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
+                ca_key_ptr = &ca_key_ctx;
+            } else {
+                /* Generate CA key with same algorithm as user key */
+                printf("RA-TLS: Generating new CA key (no ca_key_file exists)\n");
+                mbedtls_pk_type_t user_pk_type = mbedtls_pk_get_type(key);
+                printf("RA-TLS: Generating CA key with same algorithm as user key: %s\n", 
+                       get_pk_type_name(user_pk_type));
+                
+                ret = mbedtls_pk_setup(&ca_key_ctx, mbedtls_pk_info_from_type(user_pk_type));
+                if (ret < 0) {
+                    log_mbedtls_error("CA PK setup", ret);
+                    mbedtls_pk_free(&ca_key_ctx);
+                    mbedtls_x509_crt_free(ca_crt_heap);
+                    free(ca_crt_heap);
+                    ca_crt_heap = NULL;
+                    goto out_json;
+                }
+                
+                /* Generate CA key based on user key algorithm type */
+                if (user_pk_type == MBEDTLS_PK_ECKEY || user_pk_type == MBEDTLS_PK_ECDSA) {
+                    /* Get EC curve from user key */
+                    mbedtls_ecp_keypair* user_ec = mbedtls_pk_ec(*key);
+                    if (!user_ec) {
+                        printf("RA-TLS: ERROR: Failed to get EC keypair from user key\n");
+                        ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                        mbedtls_pk_free(&ca_key_ctx);
+                        mbedtls_x509_crt_free(ca_crt_heap);
+                        free(ca_crt_heap);
+                        ca_crt_heap = NULL;
+                        goto out_json;
+                    }
+                    mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(user_ec);
+                    printf("RA-TLS:   Generating CA EC key with curve ID: %d\n", grp_id);
+                    ret = mbedtls_ecp_gen_key(grp_id, mbedtls_pk_ec(ca_key_ctx),
+                                              mbedtls_ctr_drbg_random, &ctr_drbg);
+                    if (ret < 0) {
+                        log_mbedtls_error("CA EC key generation", ret);
+                        mbedtls_pk_free(&ca_key_ctx);
+                        mbedtls_x509_crt_free(ca_crt_heap);
+                        free(ca_crt_heap);
+                        ca_crt_heap = NULL;
+                        goto out_json;
+                    }
+                } else if (user_pk_type == MBEDTLS_PK_RSA) {
+                    /* Get RSA bit length from user key */
+                    size_t user_key_bits = mbedtls_pk_get_bitlen(key);
+                    printf("RA-TLS:   Generating CA RSA key (%zu bits)\n", user_key_bits);
+                    ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(ca_key_ctx), mbedtls_ctr_drbg_random, &ctr_drbg,
+                                              user_key_bits, 65537);
+                    if (ret < 0) {
+                        log_mbedtls_error("CA RSA key generation", ret);
+                        mbedtls_pk_free(&ca_key_ctx);
+                        mbedtls_x509_crt_free(ca_crt_heap);
+                        free(ca_crt_heap);
+                        ca_crt_heap = NULL;
+                        goto out_json;
+                    }
+                } else {
+                    printf("RA-TLS: ERROR: Unsupported user key type for CA key generation\n");
+                    ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                    mbedtls_pk_free(&ca_key_ctx);
+                    mbedtls_x509_crt_free(ca_crt_heap);
+                    free(ca_crt_heap);
+                    ca_crt_heap = NULL;
+                    goto out_json;
+                }
+                
+                printf("RA-TLS: CA key generated successfully\n");
+                ca_key_ptr = &ca_key_ctx;
+                
+                /* Write CA private key to file if path is specified */
+                if (json_config.ca_key_file) {
+                    printf("RA-TLS: Writing generated CA private key to file (PEM format): %s\n", json_config.ca_key_file);
+                    ret = write_key_pem(json_config.ca_key_file, &ca_key_ctx);
+                    if (ret < 0) {
+                        printf("RA-TLS: WARNING: Failed to write CA private key file (continuing anyway)\n");
+                    } else {
+                        ca_key_file_path = strdup(json_config.ca_key_file);
+                    }
+                }
+            }
+            
+            /* Generate CA certificate with the CA key (loaded or generated) */
             mbedtls_md_type_t ca_md_type = get_recommended_md_for_key(&ca_key_ctx);
             printf("RA-TLS: Auto-detected signature MD for CA certificate: %s (based on CA key)\n", 
                    get_md_name(ca_md_type));
             
-            ret = generate_ca_certificate(&ca_key_ctx, ca_crt_heap, json_config.ca_subject,
-                                         json_config.ca_not_before, json_config.ca_not_after,
+            printf("RA-TLS: Generating CA certificate\n");
+            ret = generate_ca_certificate(&ca_key_ctx, ca_crt_heap, ca_subject_to_use,
+                                         ca_not_before_to_use, ca_not_after_to_use,
                                          ca_md_type, &ctr_drbg);
             if (ret < 0) {
                 printf("RA-TLS: ERROR: Failed to generate CA certificate\n");
@@ -1495,153 +1750,40 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
             }
             
             ca_crt_ptr = ca_crt_heap;
-            ca_subject_ptr = json_config.ca_subject;
             ca_was_generated = true;
-        }
-        /* Error: ca_key provided but neither ca_cert_file nor ca_subject */
-        else {
-            printf("RA-TLS: ERROR: CA key provided but neither CA certificate file nor CA subject specified\n");
-            printf("RA-TLS:   ca_cert_file: %s\n", json_config.ca_cert_file ? json_config.ca_cert_file : "(not set)");
-            printf("RA-TLS:   ca_subject: %s\n", json_config.ca_subject ? json_config.ca_subject : "(not set)");
-            mbedtls_pk_free(&ca_key_ctx);
-            mbedtls_x509_crt_free(ca_crt_heap);
-            free(ca_crt_heap);
-            ca_crt_heap = NULL;
-            ret = MBEDTLS_ERR_X509_BAD_INPUT_DATA;
-            goto out_json;
-        }
-    } else if (use_json && json_config.ca_subject) {
-        /* Case C: Generate CA key and certificate when only ca_subject is provided */
-        printf("RA-TLS: Case C: Generating new CA key and certificate (no ca_key_file provided)\n");
-        printf("RA-TLS: CA subject: %s\n", json_config.ca_subject);
-        
-        /* Initialize CA key context and allocate CA cert on heap */
-        mbedtls_pk_init(&ca_key_ctx);
-        ca_crt_heap = malloc(sizeof(mbedtls_x509_crt));
-        if (!ca_crt_heap) {
-            ret = MBEDTLS_ERR_X509_ALLOC_FAILED;
-            log_mbedtls_error("CA cert allocation", ret);
-            goto out_json;
-        }
-        mbedtls_x509_crt_init(ca_crt_heap);
-        
-        /* Generate CA key with same algorithm as user key */
-        mbedtls_pk_type_t user_pk_type = mbedtls_pk_get_type(key);
-        printf("RA-TLS: Generating CA key with same algorithm as user key: %s\n", 
-               get_pk_type_name(user_pk_type));
-        
-        ret = mbedtls_pk_setup(&ca_key_ctx, mbedtls_pk_info_from_type(user_pk_type));
-        if (ret < 0) {
-            log_mbedtls_error("CA PK setup", ret);
-            mbedtls_pk_free(&ca_key_ctx);
-            mbedtls_x509_crt_free(ca_crt_heap);
-            free(ca_crt_heap);
-            ca_crt_heap = NULL;
-            goto out_json;
-        }
-        
-        /* Generate CA key based on user key algorithm type */
-        if (user_pk_type == MBEDTLS_PK_ECKEY || user_pk_type == MBEDTLS_PK_ECDSA) {
-            /* Get EC curve from user key */
-            mbedtls_ecp_keypair* user_ec = mbedtls_pk_ec(*key);
-            if (!user_ec) {
-                printf("RA-TLS: ERROR: Failed to get EC keypair from user key\n");
-                ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
-                mbedtls_pk_free(&ca_key_ctx);
-                mbedtls_x509_crt_free(ca_crt_heap);
-                free(ca_crt_heap);
-                ca_crt_heap = NULL;
-                goto out_json;
+            
+            /* Determine CA cert file path for writing */
+            if (json_config.ca_cert_file) {
+                ca_cert_file_path = strdup(json_config.ca_cert_file);
+            } else if (json_config.ca_key_file) {
+                /* Write cert next to CA key file */
+                char* ca_key_dir = get_directory_from_path(json_config.ca_key_file);
+                const char* ca_key_basename = get_basename_from_path(json_config.ca_key_file);
+                
+                if (ca_key_dir && ca_key_basename) {
+                    char ca_cert_path[1024];
+                    snprintf(ca_cert_path, sizeof(ca_cert_path), "%s/crt.%s.crt", 
+                            ca_key_dir, ca_key_basename);
+                    ca_cert_file_path = strdup(ca_cert_path);
+                    free(ca_key_dir);
+                } else {
+                    ca_cert_file_path = strdup("/tmp/ca.crt");
+                }
+            } else {
+                /* Fallback: write to same directory as user key file */
+                char* output_dir = NULL;
+                if (json_config.key_file) {
+                    output_dir = get_directory_from_path(json_config.key_file);
+                } else {
+                    output_dir = strdup("/tmp");
+                }
+                
+                char ca_cert_path[1024];
+                snprintf(ca_cert_path, sizeof(ca_cert_path), "%s/ca.crt", output_dir);
+                ca_cert_file_path = strdup(ca_cert_path);
+                free(output_dir);
             }
-            mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(user_ec);
-            printf("RA-TLS:   Generating CA EC key with curve ID: %d\n", grp_id);
-            ret = mbedtls_ecp_gen_key(grp_id, mbedtls_pk_ec(ca_key_ctx),
-                                      mbedtls_ctr_drbg_random, &ctr_drbg);
-            if (ret < 0) {
-                log_mbedtls_error("CA EC key generation", ret);
-                mbedtls_pk_free(&ca_key_ctx);
-                mbedtls_x509_crt_free(ca_crt_heap);
-                free(ca_crt_heap);
-                ca_crt_heap = NULL;
-                goto out_json;
-            }
-        } else if (user_pk_type == MBEDTLS_PK_RSA) {
-            /* Get RSA bit length from user key */
-            size_t user_key_bits = mbedtls_pk_get_bitlen(key);
-            printf("RA-TLS:   Generating CA RSA key (%zu bits)\n", user_key_bits);
-            ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(ca_key_ctx), mbedtls_ctr_drbg_random, &ctr_drbg,
-                                      user_key_bits, 65537);
-            if (ret < 0) {
-                log_mbedtls_error("CA RSA key generation", ret);
-                mbedtls_pk_free(&ca_key_ctx);
-                mbedtls_x509_crt_free(ca_crt_heap);
-                free(ca_crt_heap);
-                ca_crt_heap = NULL;
-                goto out_json;
-            }
-        } else {
-            printf("RA-TLS: ERROR: Unsupported user key type for CA key generation\n");
-            ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
-            mbedtls_pk_free(&ca_key_ctx);
-            mbedtls_x509_crt_free(ca_crt_heap);
-            free(ca_crt_heap);
-            ca_crt_heap = NULL;
-            goto out_json;
         }
-        
-        printf("RA-TLS: CA key generated successfully\n");
-        ca_key_ptr = &ca_key_ctx;
-        
-        /* CA certificate must use hash that matches CA key, not user-specified signature_md */
-        mbedtls_md_type_t ca_md_type = get_recommended_md_for_key(&ca_key_ctx);
-        printf("RA-TLS: Auto-detected signature MD for CA certificate: %s (based on generated CA key)\n", 
-               get_md_name(ca_md_type));
-        
-        /* Generate CA certificate */
-        printf("RA-TLS: Generating CA certificate\n");
-        ret = generate_ca_certificate(&ca_key_ctx, ca_crt_heap, json_config.ca_subject,
-                                     json_config.ca_not_before, json_config.ca_not_after,
-                                     ca_md_type, &ctr_drbg);
-        if (ret < 0) {
-            printf("RA-TLS: ERROR: Failed to generate CA certificate\n");
-            mbedtls_pk_free(&ca_key_ctx);
-            mbedtls_x509_crt_free(ca_crt_heap);
-            free(ca_crt_heap);
-            ca_crt_heap = NULL;
-            goto out_json;
-        }
-        
-        ca_crt_ptr = ca_crt_heap;
-        ca_subject_ptr = json_config.ca_subject;
-        ca_was_generated = true;
-        
-        /* Determine directory for CA key/cert files */
-        char* output_dir = NULL;
-        if (json_config.key_file) {
-            output_dir = get_directory_from_path(json_config.key_file);
-            printf("RA-TLS: Using directory from user key file for CA files: %s\n", output_dir);
-        } else {
-            output_dir = strdup("/tmp");
-            printf("RA-TLS: No user key file specified, using /tmp for CA files\n");
-        }
-        
-        /* Write CA private key to file */
-        char ca_key_path[1024];
-        snprintf(ca_key_path, sizeof(ca_key_path), "%s/ca-key.pem", output_dir);
-        printf("RA-TLS: Writing generated CA private key to file (PEM format): %s\n", ca_key_path);
-        ret = write_key_pem(ca_key_path, &ca_key_ctx);
-        if (ret < 0) {
-            printf("RA-TLS: WARNING: Failed to write CA private key file (continuing anyway)\n");
-        } else {
-            ca_key_file_path = strdup(ca_key_path);
-        }
-        
-        /* Store CA cert path for later writing */
-        char ca_cert_path[1024];
-        snprintf(ca_cert_path, sizeof(ca_cert_path), "%s/ca.crt", output_dir);
-        ca_cert_file_path = strdup(ca_cert_path);
-        
-        free(output_dir);
     } else {
         printf("RA-TLS: No CA key specified, will generate self-signed certificate\n");
         
