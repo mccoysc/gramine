@@ -1397,49 +1397,12 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         printf("RA-TLS: CA key loaded successfully, type=%s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
         ca_key_ptr = &ca_key_ctx;
         
-        /* Auto-detect signature MD based on CA key if not specified by user */
-        if (!json_config.signature_md) {
-            mbedtls_md_type_t recommended_md = get_recommended_md_for_key(&ca_key_ctx);
-            if (recommended_md != md_type) {
-                printf("RA-TLS: Auto-detected signature MD for CA key: %s (was %s)\n", 
-                       get_md_name(recommended_md), get_md_name(md_type));
-                md_type = recommended_md;
-            }
+        /* Note: signature_md from JSON config applies to leaf certificate only.
+         * CA certificate will always auto-detect the correct hash based on CA key. */
+        if (json_config.signature_md) {
+            printf("RA-TLS: User-specified signature_md for leaf certificate: %s\n", get_md_name(md_type));
         } else {
-            printf("RA-TLS: Using user-specified signature MD: %s\n", get_md_name(md_type));
-            
-            /* Validate that user-specified MD is compatible with CA key */
-            mbedtls_md_type_t recommended_md = get_recommended_md_for_key(&ca_key_ctx);
-            if (recommended_md != md_type) {
-                printf("RA-TLS: ERROR: User-specified signature_md is incompatible with CA key\n");
-                printf("RA-TLS: ERROR: CA key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
-                
-                mbedtls_pk_type_t pk_type = mbedtls_pk_get_type(&ca_key_ctx);
-                if (pk_type == MBEDTLS_PK_ECKEY || pk_type == MBEDTLS_PK_ECDSA) {
-                    mbedtls_ecp_keypair* ec = mbedtls_pk_ec(ca_key_ctx);
-                    if (ec) {
-                        mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(ec);
-                        const char* curve_name = "unknown";
-                        if (grp_id == MBEDTLS_ECP_DP_SECP256R1) curve_name = "P-256";
-                        else if (grp_id == MBEDTLS_ECP_DP_SECP384R1) curve_name = "P-384";
-                        else if (grp_id == MBEDTLS_ECP_DP_SECP521R1) curve_name = "P-521";
-                        printf("RA-TLS: ERROR: CA key curve: %s\n", curve_name);
-                    }
-                }
-                
-                printf("RA-TLS: ERROR: User-specified signature_md: %s\n", get_md_name(md_type));
-                printf("RA-TLS: ERROR: Required signature_md for this CA key: %s\n", 
-                       get_md_name(recommended_md));
-                printf("RA-TLS: ERROR: To fix: either remove 'signature_md' from JSON config (auto-detect) or set it to '%s'\n",
-                       get_md_name(recommended_md));
-                
-                ret = MBEDTLS_ERR_X509_INVALID_ALG;
-                mbedtls_pk_free(&ca_key_ctx);
-                mbedtls_x509_crt_free(ca_crt_heap);
-                free(ca_crt_heap);
-                ca_crt_heap = NULL;
-                goto out_json;
-            }
+            printf("RA-TLS: No signature_md specified, will auto-detect for leaf certificate\n");
         }
         
         /* Case A: Load existing CA certificate if ca_cert_file is provided */
@@ -1476,9 +1439,15 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         /* Case B: Generate CA certificate if ca_subject is provided but ca_cert_file is not */
         else if (json_config.ca_subject) {
             printf("RA-TLS: Case B: Generating new CA certificate\n");
+            
+            /* CA certificate must use hash that matches CA key, not user-specified signature_md */
+            mbedtls_md_type_t ca_md_type = get_recommended_md_for_key(&ca_key_ctx);
+            printf("RA-TLS: Auto-detected signature MD for CA certificate: %s (based on CA key)\n", 
+                   get_md_name(ca_md_type));
+            
             ret = generate_ca_certificate(&ca_key_ctx, ca_crt_heap, json_config.ca_subject,
                                          json_config.ca_not_before, json_config.ca_not_after,
-                                         md_type, &ctr_drbg);
+                                         ca_md_type, &ctr_drbg);
             if (ret < 0) {
                 printf("RA-TLS: ERROR: Failed to generate CA certificate\n");
                 mbedtls_pk_free(&ca_key_ctx);
@@ -1586,21 +1555,16 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         printf("RA-TLS: CA key generated successfully\n");
         ca_key_ptr = &ca_key_ctx;
         
-        /* Auto-detect signature MD based on CA key if not specified by user */
-        if (!json_config.signature_md) {
-            mbedtls_md_type_t recommended_md = get_recommended_md_for_key(&ca_key_ctx);
-            if (recommended_md != md_type) {
-                printf("RA-TLS: Auto-detected signature MD for CA key: %s (was %s)\n", 
-                       get_md_name(recommended_md), get_md_name(md_type));
-                md_type = recommended_md;
-            }
-        }
+        /* CA certificate must use hash that matches CA key, not user-specified signature_md */
+        mbedtls_md_type_t ca_md_type = get_recommended_md_for_key(&ca_key_ctx);
+        printf("RA-TLS: Auto-detected signature MD for CA certificate: %s (based on generated CA key)\n", 
+               get_md_name(ca_md_type));
         
         /* Generate CA certificate */
         printf("RA-TLS: Generating CA certificate\n");
         ret = generate_ca_certificate(&ca_key_ctx, ca_crt_heap, json_config.ca_subject,
                                      json_config.ca_not_before, json_config.ca_not_after,
-                                     md_type, &ctr_drbg);
+                                     ca_md_type, &ctr_drbg);
         if (ret < 0) {
             printf("RA-TLS: ERROR: Failed to generate CA certificate\n");
             mbedtls_pk_free(&ca_key_ctx);
