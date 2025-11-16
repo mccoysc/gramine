@@ -5,10 +5,13 @@ on:
     branches:
       - master
     paths:
-      - 'tools/sgx/ra-tls/ra_tls_attest.c'
-      - 'tools/sgx/ra-tls/ra_tls_verify_*.c'
-      - 'tools/sgx/ra-tls/secret_prov_*.c'
-      - 'tools/sgx/ra-tls/meson.build'
+      - '.github/workflows/auto-compile-ratls.yml'
+      - 'tools/sgx/ra-tls/**'
+  pull_request:
+    paths:
+      - '.github/workflows/auto-compile-ratls.yml'
+      - 'tools/sgx/ra-tls/**'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -46,6 +49,21 @@ jobs:
             libsgx-dcap-quote-verify-dev \
             libsgx-headers \
             libsgx-urts
+            
+      - name: Verify build environment
+        run: |
+          echo "=== System Information ==="
+          uname -m
+          echo ""
+          echo "=== PATH ==="
+          echo "$PATH"
+          echo ""
+          echo "=== Verify nasm ==="
+          command -v nasm || { echo "ERROR: nasm not found on PATH"; exit 1; }
+          nasm -v
+          echo ""
+          echo "=== nasm package info ==="
+          dpkg -l nasm || apt-cache policy nasm
             
       - name: Configure meson build
         run: |
