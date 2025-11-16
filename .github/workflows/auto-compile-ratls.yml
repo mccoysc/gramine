@@ -83,12 +83,24 @@ jobs:
         run: |
           ninja -C build/ \
             tools/sgx/ra-tls/libra_tls_attest.so \
-            tools/sgx/ra-tls/libsecret_prov_attest.so
+            tools/sgx/ra-tls/libra_tls_verify.a \
+            tools/sgx/ra-tls/libra_tls_verify_dcap.so \
+            tools/sgx/ra-tls/libra_tls_verify_dcap_gramine.so \
+            tools/sgx/ra-tls/libratls-quote-verify.so \
+            tools/sgx/ra-tls/libsecret_prov_attest.so \
+            tools/sgx/ra-tls/libsecret_prov_verify.a \
+            tools/sgx/ra-tls/libsecret_prov_verify_dcap.so
             
       - name: Copy compiled libraries to prebuilt directory
         run: |
           cp build/tools/sgx/ra-tls/libra_tls_attest.so tools/sgx/ra-tls/prebuilt/
+          cp build/tools/sgx/ra-tls/libra_tls_verify.a tools/sgx/ra-tls/prebuilt/
+          cp build/tools/sgx/ra-tls/libra_tls_verify_dcap.so tools/sgx/ra-tls/prebuilt/
+          cp build/tools/sgx/ra-tls/libra_tls_verify_dcap_gramine.so tools/sgx/ra-tls/prebuilt/
+          cp build/tools/sgx/ra-tls/libratls-quote-verify.so tools/sgx/ra-tls/prebuilt/
           cp build/tools/sgx/ra-tls/libsecret_prov_attest.so tools/sgx/ra-tls/prebuilt/
+          cp build/tools/sgx/ra-tls/libsecret_prov_verify.a tools/sgx/ra-tls/prebuilt/
+          cp build/tools/sgx/ra-tls/libsecret_prov_verify_dcap.so tools/sgx/ra-tls/prebuilt/
           
       - name: Check if libraries changed
         id: check_changes
@@ -119,4 +131,10 @@ jobs:
           name: ratls-prebuilt-libs
           path: |
             build/tools/sgx/ra-tls/libra_tls_attest.so
+            build/tools/sgx/ra-tls/libra_tls_verify.a
+            build/tools/sgx/ra-tls/libra_tls_verify_dcap.so
+            build/tools/sgx/ra-tls/libra_tls_verify_dcap_gramine.so
+            build/tools/sgx/ra-tls/libratls-quote-verify.so
             build/tools/sgx/ra-tls/libsecret_prov_attest.so
+            build/tools/sgx/ra-tls/libsecret_prov_verify.a
+            build/tools/sgx/ra-tls/libsecret_prov_verify_dcap.so
