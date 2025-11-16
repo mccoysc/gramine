@@ -176,6 +176,66 @@ static int write_cert_pem(const char* path, const uint8_t* der_data, size_t der_
     return 0;
 }
 
+/* Helper function to write private key in PEM format */
+static int write_key_pem(const char* path, mbedtls_pk_context* key) {
+    int ret;
+    size_t output_buf_size = 16384;  /* Large enough for any private key */
+    uint8_t* output_buf = malloc(output_buf_size);
+    if (!output_buf) {
+        printf("RA-TLS: Failed to allocate buffer for key PEM conversion\n");
+        return MBEDTLS_ERR_X509_ALLOC_FAILED;
+    }
+    
+    /* Write key to PEM format */
+    ret = mbedtls_pk_write_key_pem(key, output_buf, output_buf_size);
+    if (ret < 0) {
+        printf("RA-TLS: Failed to convert key to PEM: %d\n", ret);
+        free(output_buf);
+        return ret;
+    }
+    
+    /* Write PEM to file */
+    size_t pem_len = strlen((char*)output_buf);
+    ssize_t written = write_file(path, output_buf, pem_len);
+    free(output_buf);
+    
+    if (written < 0) {
+        printf("RA-TLS: Failed to write key PEM file: %s\n", path);
+        return -1;
+    }
+    
+    return 0;
+}
+
+/* Helper function to extract directory from file path */
+static char* get_directory_from_path(const char* file_path) {
+    if (!file_path) {
+        return NULL;
+    }
+    
+    const char* last_slash = strrchr(file_path, '/');
+    if (!last_slash) {
+        /* No directory separator, return current directory */
+        return strdup(".");
+    }
+    
+    if (last_slash == file_path) {
+        /* Root directory */
+        return strdup("/");
+    }
+    
+    /* Extract directory part */
+    size_t dir_len = last_slash - file_path;
+    char* dir = malloc(dir_len + 1);
+    if (!dir) {
+        return NULL;
+    }
+    
+    memcpy(dir, file_path, dir_len);
+    dir[dir_len] = '\0';
+    return dir;
+}
+
 /* Helper function to get PK type name */
 static const char* get_pk_type_name(mbedtls_pk_type_t pk_type) {
     switch (pk_type) {
@@ -1261,7 +1321,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         printf("RA-TLS: User-specified signature MD algorithm: %s\n", get_md_name(md_type));
     }
     
-    /* Handle CA certificate and key if JSON config has ca_key_file */
+    /* Handle CA certificate and key if JSON config has ca_key_file or ca_subject */
     printf("RA-TLS: ========== CA Certificate Handling ==========\n");
     mbedtls_pk_context ca_key_ctx;
     mbedtls_pk_context* ca_key_ptr = NULL;
@@ -1270,6 +1330,8 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     char* ca_subject_from_cert = NULL;
     const char* ca_subject_ptr = NULL;
     bool ca_was_generated = false;  /* Track if CA was generated (not loaded) */
+    char* ca_key_file_path = NULL;  /* Path where CA key was written */
+    char* ca_cert_file_path = NULL;  /* Path where CA cert was written */
     
     if (use_json && json_config.ca_key_file) {
         printf("RA-TLS: CA key file specified: %s\n", json_config.ca_key_file);
@@ -1419,6 +1481,143 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
             ret = MBEDTLS_ERR_X509_BAD_INPUT_DATA;
             goto out_json;
         }
+    } else if (use_json && json_config.ca_subject) {
+        /* Case C: Generate CA key and certificate when only ca_subject is provided */
+        printf("RA-TLS: Case C: Generating new CA key and certificate (no ca_key_file provided)\n");
+        printf("RA-TLS: CA subject: %s\n", json_config.ca_subject);
+        
+        /* Initialize CA key context and allocate CA cert on heap */
+        mbedtls_pk_init(&ca_key_ctx);
+        ca_crt_heap = malloc(sizeof(mbedtls_x509_crt));
+        if (!ca_crt_heap) {
+            ret = MBEDTLS_ERR_X509_ALLOC_FAILED;
+            log_mbedtls_error("CA cert allocation", ret);
+            goto out_json;
+        }
+        mbedtls_x509_crt_init(ca_crt_heap);
+        
+        /* Generate CA key with same algorithm as user key */
+        mbedtls_pk_type_t user_pk_type = mbedtls_pk_get_type(key);
+        printf("RA-TLS: Generating CA key with same algorithm as user key: %s\n", 
+               get_pk_type_name(user_pk_type));
+        
+        ret = mbedtls_pk_setup(&ca_key_ctx, mbedtls_pk_info_from_type(user_pk_type));
+        if (ret < 0) {
+            log_mbedtls_error("CA PK setup", ret);
+            mbedtls_pk_free(&ca_key_ctx);
+            mbedtls_x509_crt_free(ca_crt_heap);
+            free(ca_crt_heap);
+            ca_crt_heap = NULL;
+            goto out_json;
+        }
+        
+        /* Generate CA key based on user key algorithm type */
+        if (user_pk_type == MBEDTLS_PK_ECKEY || user_pk_type == MBEDTLS_PK_ECDSA) {
+            /* Get EC curve from user key */
+            mbedtls_ecp_keypair* user_ec = mbedtls_pk_ec(*key);
+            if (!user_ec) {
+                printf("RA-TLS: ERROR: Failed to get EC keypair from user key\n");
+                ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                mbedtls_pk_free(&ca_key_ctx);
+                mbedtls_x509_crt_free(ca_crt_heap);
+                free(ca_crt_heap);
+                ca_crt_heap = NULL;
+                goto out_json;
+            }
+            mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(user_ec);
+            printf("RA-TLS:   Generating CA EC key with curve ID: %d\n", grp_id);
+            ret = mbedtls_ecp_gen_key(grp_id, mbedtls_pk_ec(ca_key_ctx),
+                                      mbedtls_ctr_drbg_random, &ctr_drbg);
+            if (ret < 0) {
+                log_mbedtls_error("CA EC key generation", ret);
+                mbedtls_pk_free(&ca_key_ctx);
+                mbedtls_x509_crt_free(ca_crt_heap);
+                free(ca_crt_heap);
+                ca_crt_heap = NULL;
+                goto out_json;
+            }
+        } else if (user_pk_type == MBEDTLS_PK_RSA) {
+            /* Get RSA bit length from user key */
+            size_t user_key_bits = mbedtls_pk_get_bitlen(key);
+            printf("RA-TLS:   Generating CA RSA key (%zu bits)\n", user_key_bits);
+            ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(ca_key_ctx), mbedtls_ctr_drbg_random, &ctr_drbg,
+                                      user_key_bits, 65537);
+            if (ret < 0) {
+                log_mbedtls_error("CA RSA key generation", ret);
+                mbedtls_pk_free(&ca_key_ctx);
+                mbedtls_x509_crt_free(ca_crt_heap);
+                free(ca_crt_heap);
+                ca_crt_heap = NULL;
+                goto out_json;
+            }
+        } else {
+            printf("RA-TLS: ERROR: Unsupported user key type for CA key generation\n");
+            ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+            mbedtls_pk_free(&ca_key_ctx);
+            mbedtls_x509_crt_free(ca_crt_heap);
+            free(ca_crt_heap);
+            ca_crt_heap = NULL;
+            goto out_json;
+        }
+        
+        printf("RA-TLS: CA key generated successfully\n");
+        ca_key_ptr = &ca_key_ctx;
+        
+        /* Auto-detect signature MD based on CA key if not specified by user */
+        if (!json_config.signature_md) {
+            mbedtls_md_type_t recommended_md = get_recommended_md_for_key(&ca_key_ctx);
+            if (recommended_md != md_type) {
+                printf("RA-TLS: Auto-detected signature MD for CA key: %s (was %s)\n", 
+                       get_md_name(recommended_md), get_md_name(md_type));
+                md_type = recommended_md;
+            }
+        }
+        
+        /* Generate CA certificate */
+        printf("RA-TLS: Generating CA certificate\n");
+        ret = generate_ca_certificate(&ca_key_ctx, ca_crt_heap, json_config.ca_subject,
+                                     json_config.ca_not_before, json_config.ca_not_after,
+                                     md_type, &ctr_drbg);
+        if (ret < 0) {
+            printf("RA-TLS: ERROR: Failed to generate CA certificate\n");
+            mbedtls_pk_free(&ca_key_ctx);
+            mbedtls_x509_crt_free(ca_crt_heap);
+            free(ca_crt_heap);
+            ca_crt_heap = NULL;
+            goto out_json;
+        }
+        
+        ca_crt_ptr = ca_crt_heap;
+        ca_subject_ptr = json_config.ca_subject;
+        ca_was_generated = true;
+        
+        /* Determine directory for CA key/cert files */
+        char* output_dir = NULL;
+        if (json_config.key_file) {
+            output_dir = get_directory_from_path(json_config.key_file);
+            printf("RA-TLS: Using directory from user key file for CA files: %s\n", output_dir);
+        } else {
+            output_dir = strdup("/tmp");
+            printf("RA-TLS: No user key file specified, using /tmp for CA files\n");
+        }
+        
+        /* Write CA private key to file */
+        char ca_key_path[1024];
+        snprintf(ca_key_path, sizeof(ca_key_path), "%s/ca-key.pem", output_dir);
+        printf("RA-TLS: Writing generated CA private key to file (PEM format): %s\n", ca_key_path);
+        ret = write_key_pem(ca_key_path, &ca_key_ctx);
+        if (ret < 0) {
+            printf("RA-TLS: WARNING: Failed to write CA private key file (continuing anyway)\n");
+        } else {
+            ca_key_file_path = strdup(ca_key_path);
+        }
+        
+        /* Store CA cert path for later writing */
+        char ca_cert_path[1024];
+        snprintf(ca_cert_path, sizeof(ca_cert_path), "%s/ca.crt", output_dir);
+        ca_cert_file_path = strdup(ca_cert_path);
+        
+        free(output_dir);
     } else {
         printf("RA-TLS: No CA key specified, will generate self-signed certificate\n");
         
@@ -1529,8 +1728,19 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                 /* The raw DER data is in crt->next->raw.p with length crt->next->raw.len */
                 if (crt->next->raw.p && crt->next->raw.len > 0) {
                     char ca_path_buf[1024] = {0};
-                    snprintf(ca_path_buf, sizeof(ca_path_buf), "%s.ca.crt",
-                             json_config.ca_key_file ? json_config.ca_key_file : "./ca_key");
+                    
+                    /* Determine CA certificate file path based on how CA was created */
+                    if (ca_cert_file_path) {
+                        /* Case C: CA key was generated, use pre-determined path */
+                        snprintf(ca_path_buf, sizeof(ca_path_buf), "%s", ca_cert_file_path);
+                    } else if (json_config.ca_key_file) {
+                        /* Case B: CA key was provided, write cert next to CA key file */
+                        snprintf(ca_path_buf, sizeof(ca_path_buf), "crt.%s.crt", json_config.ca_key_file);
+                    } else {
+                        /* Fallback */
+                        snprintf(ca_path_buf, sizeof(ca_path_buf), "./ca.crt");
+                    }
+                    
                     printf("RA-TLS: Writing generated CA certificate to file (PEM format): %s\n", ca_path_buf);
                     write_cert_pem(ca_path_buf, crt->next->raw.p, crt->next->raw.len);
                 }
@@ -1541,6 +1751,10 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
 
     ret = 0;
 out_json:
+    /* Clean up allocated paths */
+    free(ca_key_file_path);
+    free(ca_cert_file_path);
+    
     if (use_json) {
         free_cert_config(&json_config);
     }
