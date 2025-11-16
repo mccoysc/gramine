@@ -1742,6 +1742,42 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         mbedtls_pk_free(&ca_key_ctx);
     }
 
+    /* Write generated CA certificate to file (regardless of crt parameter) */
+    if (ca_was_generated && ca_crt_heap && ca_crt_heap->raw.p && ca_crt_heap->raw.len > 0) {
+        char ca_path_buf[1024] = {0};
+        
+        /* Determine CA certificate file path based on how CA was created */
+        if (ca_cert_file_path) {
+            /* Case C: CA key was generated, use pre-determined path */
+            snprintf(ca_path_buf, sizeof(ca_path_buf), "%s", ca_cert_file_path);
+        } else if (use_json && json_config.ca_key_file) {
+            /* Case B: CA key was provided, write cert next to CA key file */
+            char* ca_key_dir = get_directory_from_path(json_config.ca_key_file);
+            const char* ca_key_basename = get_basename_from_path(json_config.ca_key_file);
+            
+            if (ca_key_dir && ca_key_basename) {
+                snprintf(ca_path_buf, sizeof(ca_path_buf), "%s/crt.%s.crt", 
+                        ca_key_dir, ca_key_basename);
+            } else {
+                /* Fallback if path parsing fails */
+                snprintf(ca_path_buf, sizeof(ca_path_buf), "/tmp/ca.crt");
+            }
+            
+            free(ca_key_dir);
+        } else {
+            /* Fallback */
+            snprintf(ca_path_buf, sizeof(ca_path_buf), "/tmp/ca.crt");
+        }
+        
+        printf("RA-TLS: Writing generated CA certificate to file (PEM format): %s\n", ca_path_buf);
+        int write_ret = write_cert_pem(ca_path_buf, ca_crt_heap->raw.p, ca_crt_heap->raw.len);
+        if (write_ret < 0) {
+            printf("RA-TLS: WARNING: Failed to write CA certificate file (errno=%d, continuing anyway)\n", errno);
+        } else {
+            printf("RA-TLS: CA certificate written successfully\n");
+        }
+    }
+
     if (crt_der && crt_der_size) {
         crt_der_buf = malloc(size);
         if (!crt_der_buf) {
@@ -1774,43 +1810,6 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         if (ca_crt_ptr) {
             crt->next = ca_crt_heap;
             ca_crt_heap = NULL;  /* Ownership transferred to chain */
-            
-            /* Write generated CA certificate to file in PEM format */
-            if (ca_was_generated && crt->next) {
-                /* CA cert is already in DER format in the chain, extract and write it */
-                /* The raw DER data is in crt->next->raw.p with length crt->next->raw.len */
-                if (crt->next->raw.p && crt->next->raw.len > 0) {
-                    char ca_path_buf[1024] = {0};
-                    
-                    /* Determine CA certificate file path based on how CA was created */
-                    if (ca_cert_file_path) {
-                        /* Case C: CA key was generated, use pre-determined path */
-                        snprintf(ca_path_buf, sizeof(ca_path_buf), "%s", ca_cert_file_path);
-                    } else if (json_config.ca_key_file) {
-                        /* Case B: CA key was provided, write cert next to CA key file */
-                        /* Extract directory and basename from CA key file path */
-                        char* ca_key_dir = get_directory_from_path(json_config.ca_key_file);
-                        const char* ca_key_basename = get_basename_from_path(json_config.ca_key_file);
-                        
-                        if (ca_key_dir && ca_key_basename) {
-                            snprintf(ca_path_buf, sizeof(ca_path_buf), "%s/crt.%s.crt", 
-                                    ca_key_dir, ca_key_basename);
-                        } else {
-                            /* Fallback if path parsing fails */
-                            snprintf(ca_path_buf, sizeof(ca_path_buf), "./ca.crt");
-                        }
-                        
-                        free(ca_key_dir);
-                    } else {
-                        /* Fallback */
-                        snprintf(ca_path_buf, sizeof(ca_path_buf), "./ca.crt");
-                    }
-                    
-                    printf("RA-TLS: Writing generated CA certificate to file (PEM format): %s\n", ca_path_buf);
-                    write_cert_pem(ca_path_buf, crt->next->raw.p, crt->next->raw.len);
-                }
-                /* Ignore errors writing CA cert file - not critical */
-            }
         }
     }
 
