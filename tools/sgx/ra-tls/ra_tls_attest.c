@@ -494,7 +494,6 @@ static int generate_x509(mbedtls_pk_context* pk, const uint8_t* quote, size_t qu
     mbedtls_mpi_init(&serial);
 
     mbedtls_x509write_crt_init(writecrt);
-    mbedtls_x509write_crt_set_md_alg(writecrt, md_type);
 
     /* Set subject key (always the RA-TLS key) */
     mbedtls_x509write_crt_set_subject_key(writecrt, pk);
@@ -505,6 +504,44 @@ static int generate_x509(mbedtls_pk_context* pk, const uint8_t* quote, size_t qu
     } else {
         mbedtls_x509write_crt_set_issuer_key(writecrt, pk);
     }
+    
+    /* Set signature MD algorithm AFTER setting issuer key */
+    mbedtls_x509write_crt_set_md_alg(writecrt, md_type);
+    
+    /* Debug logging for certificate configuration */
+    printf("RA-TLS: ========== Certificate Configuration (generate_x509) ==========\n");
+    printf("RA-TLS:   Certificate type: %s\n", ca_key ? "CA-signed" : "self-signed");
+    printf("RA-TLS:   Subject key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(pk)));
+    if (mbedtls_pk_get_type(pk) == MBEDTLS_PK_ECKEY || mbedtls_pk_get_type(pk) == MBEDTLS_PK_ECDSA) {
+        mbedtls_ecp_keypair* ec = mbedtls_pk_ec(*pk);
+        if (ec) {
+            mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(ec);
+            const char* curve_name = "unknown";
+            if (grp_id == MBEDTLS_ECP_DP_SECP256R1) curve_name = "P-256";
+            else if (grp_id == MBEDTLS_ECP_DP_SECP384R1) curve_name = "P-384";
+            else if (grp_id == MBEDTLS_ECP_DP_SECP521R1) curve_name = "P-521";
+            printf("RA-TLS:   Subject key curve: %s\n", curve_name);
+        }
+    }
+    if (ca_key) {
+        printf("RA-TLS:   Issuer key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(ca_key)));
+        if (mbedtls_pk_get_type(ca_key) == MBEDTLS_PK_ECKEY || mbedtls_pk_get_type(ca_key) == MBEDTLS_PK_ECDSA) {
+            mbedtls_ecp_keypair* ec = mbedtls_pk_ec(*ca_key);
+            if (ec) {
+                mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(ec);
+                const char* curve_name = "unknown";
+                if (grp_id == MBEDTLS_ECP_DP_SECP256R1) curve_name = "P-256";
+                else if (grp_id == MBEDTLS_ECP_DP_SECP384R1) curve_name = "P-384";
+                else if (grp_id == MBEDTLS_ECP_DP_SECP521R1) curve_name = "P-521";
+                printf("RA-TLS:   Issuer key curve: %s\n", curve_name);
+            }
+        }
+    } else {
+        printf("RA-TLS:   Issuer key: same as subject (self-signed)\n");
+    }
+    printf("RA-TLS:   Signature MD: %s (type=%d)\n", get_md_name(md_type), md_type);
+    printf("RA-TLS:   is_ca flag: %s\n", is_ca ? "true" : "false");
+    printf("RA-TLS: ================================================================\n");
 
     /* Set subject name */
     const char* subject = subject_name ? subject_name : CERT_SUBJECT_NAME_VALUES;
