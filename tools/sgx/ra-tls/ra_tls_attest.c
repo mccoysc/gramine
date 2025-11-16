@@ -133,6 +133,49 @@ static const char* get_md_name(mbedtls_md_type_t md_type) {
     }
 }
 
+/* Helper function to write certificate in PEM format */
+static int write_cert_pem(const char* path, const uint8_t* der_data, size_t der_len) {
+    int ret;
+    size_t pem_len = 0;
+    
+    /* Calculate required PEM buffer size */
+    ret = mbedtls_pem_write_buffer("-----BEGIN CERTIFICATE-----\n",
+                                   "-----END CERTIFICATE-----\n",
+                                   der_data, der_len, NULL, 0, &pem_len);
+    if (ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+        printf("RA-TLS: Failed to calculate PEM buffer size: %d\n", ret);
+        return ret;
+    }
+    
+    /* Allocate PEM buffer */
+    uint8_t* pem_buf = malloc(pem_len);
+    if (!pem_buf) {
+        printf("RA-TLS: Failed to allocate PEM buffer\n");
+        return MBEDTLS_ERR_X509_ALLOC_FAILED;
+    }
+    
+    /* Convert DER to PEM */
+    ret = mbedtls_pem_write_buffer("-----BEGIN CERTIFICATE-----\n",
+                                   "-----END CERTIFICATE-----\n",
+                                   der_data, der_len, pem_buf, pem_len, &pem_len);
+    if (ret < 0) {
+        printf("RA-TLS: Failed to convert certificate to PEM: %d\n", ret);
+        free(pem_buf);
+        return ret;
+    }
+    
+    /* Write PEM to file */
+    ssize_t written = write_file(path, pem_buf, pem_len - 1);  /* -1 to exclude null terminator */
+    free(pem_buf);
+    
+    if (written < 0) {
+        printf("RA-TLS: Failed to write PEM file: %s\n", path);
+        return -1;
+    }
+    
+    return 0;
+}
+
 /* Helper function to get PK type name */
 static const char* get_pk_type_name(mbedtls_pk_type_t pk_type) {
     switch (pk_type) {
@@ -894,6 +937,25 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
         goto out;
     
     /* Write certificate to DER format */
+    printf("RA-TLS: ========== Writing CA Certificate to DER ==========\n");
+    printf("RA-TLS:   Issuer key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(ca_key)));
+    mbedtls_pk_type_t issuer_pk_type = mbedtls_pk_get_type(ca_key);
+    if (issuer_pk_type == MBEDTLS_PK_ECKEY || issuer_pk_type == MBEDTLS_PK_ECDSA) {
+        mbedtls_ecp_keypair* ec = mbedtls_pk_ec(*ca_key);
+        if (ec) {
+            mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(ec);
+            const char* curve_name = "unknown";
+            if (grp_id == MBEDTLS_ECP_DP_SECP256R1) curve_name = "P-256";
+            else if (grp_id == MBEDTLS_ECP_DP_SECP384R1) curve_name = "P-384";
+            else if (grp_id == MBEDTLS_ECP_DP_SECP521R1) curve_name = "P-521";
+            printf("RA-TLS:   Issuer key curve: %s\n", curve_name);
+        }
+    }
+    printf("RA-TLS:   Subject key type: %s (same as issuer - self-signed)\n", 
+           get_pk_type_name(mbedtls_pk_get_type(ca_key)));
+    printf("RA-TLS:   Signature MD: %s (type=%d)\n", get_md_name(md_type), md_type);
+    printf("RA-TLS: ===================================================\n");
+    
     uint8_t ca_cert_buf[4096];
     int ca_cert_size = mbedtls_x509write_crt_der(&ca_writecrt, ca_cert_buf, sizeof(ca_cert_buf),
                                                   mbedtls_ctr_drbg_random, ctr_drbg);
@@ -1267,6 +1329,32 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
             }
         } else {
             printf("RA-TLS: Using user-specified signature MD: %s\n", get_md_name(md_type));
+            
+            /* Validate that user-specified MD is compatible with CA key */
+            mbedtls_md_type_t recommended_md = get_recommended_md_for_key(&ca_key_ctx);
+            if (recommended_md != md_type) {
+                printf("RA-TLS: WARNING: User-specified signature_md=%s may be incompatible with CA key\n",
+                       get_md_name(md_type));
+                printf("RA-TLS: WARNING: CA key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
+                
+                mbedtls_pk_type_t pk_type = mbedtls_pk_get_type(&ca_key_ctx);
+                if (pk_type == MBEDTLS_PK_ECKEY || pk_type == MBEDTLS_PK_ECDSA) {
+                    mbedtls_ecp_keypair* ec = mbedtls_pk_ec(ca_key_ctx);
+                    if (ec) {
+                        mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(ec);
+                        const char* curve_name = "unknown";
+                        if (grp_id == MBEDTLS_ECP_DP_SECP256R1) curve_name = "P-256";
+                        else if (grp_id == MBEDTLS_ECP_DP_SECP384R1) curve_name = "P-384";
+                        else if (grp_id == MBEDTLS_ECP_DP_SECP521R1) curve_name = "P-521";
+                        printf("RA-TLS: WARNING: CA key curve: %s\n", curve_name);
+                    }
+                }
+                
+                printf("RA-TLS: WARNING: Recommended signature_md for this CA key: %s\n", 
+                       get_md_name(recommended_md));
+                printf("RA-TLS: WARNING: To fix: either remove 'signature_md' from JSON (auto-detect) or set it to '%s'\n",
+                       get_md_name(recommended_md));
+            }
         }
         
         /* Case A: Load existing CA certificate if ca_cert_file is provided */
@@ -1341,6 +1429,18 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                 printf("RA-TLS: Auto-detected signature MD for self-signed leaf key: %s (was %s)\n", 
                        get_md_name(recommended_md), get_md_name(md_type));
                 md_type = recommended_md;
+            }
+        } else {
+            /* Validate that user-specified MD is compatible with user key (self-signed case) */
+            mbedtls_md_type_t recommended_md = get_recommended_md_for_key(key);
+            if (recommended_md != md_type) {
+                printf("RA-TLS: WARNING: User-specified signature_md=%s may be incompatible with user key\n",
+                       get_md_name(md_type));
+                printf("RA-TLS: WARNING: User key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(key)));
+                printf("RA-TLS: WARNING: Recommended signature_md for this user key: %s\n", 
+                       get_md_name(recommended_md));
+                printf("RA-TLS: WARNING: To fix: either remove 'signature_md' from JSON (auto-detect) or set it to '%s'\n",
+                       get_md_name(recommended_md));
             }
         }
     }
@@ -1423,7 +1523,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
             crt->next = ca_crt_heap;
             ca_crt_heap = NULL;  /* Ownership transferred to chain */
             
-            /* Write generated CA certificate to file */
+            /* Write generated CA certificate to file in PEM format */
             if (ca_was_generated && crt->next) {
                 /* CA cert is already in DER format in the chain, extract and write it */
                 /* The raw DER data is in crt->next->raw.p with length crt->next->raw.len */
@@ -1431,8 +1531,8 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                     char ca_path_buf[1024] = {0};
                     snprintf(ca_path_buf, sizeof(ca_path_buf), "%s.ca.crt",
                              json_config.ca_key_file ? json_config.ca_key_file : "./ca_key");
-                    printf("RA-TLS: Writing generated CA certificate to file: %s\n", ca_path_buf);
-                    write_file(ca_path_buf, crt->next->raw.p, crt->next->raw.len);
+                    printf("RA-TLS: Writing generated CA certificate to file (PEM format): %s\n", ca_path_buf);
+                    write_cert_pem(ca_path_buf, crt->next->raw.p, crt->next->raw.len);
                 }
                 /* Ignore errors writing CA cert file - not critical */
             }

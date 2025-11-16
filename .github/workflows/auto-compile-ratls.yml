@@ -1,0 +1,76 @@
+name: Auto-compile RA-TLS Libraries
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'tools/sgx/ra-tls/ra_tls_attest.c'
+      - 'tools/sgx/ra-tls/ra_tls_verify_*.c'
+      - 'tools/sgx/ra-tls/secret_prov_*.c'
+      - 'tools/sgx/ra-tls/meson.build'
+
+jobs:
+  compile-and-commit:
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip python3-dev \
+            ninja-build meson \
+            libprotobuf-c-dev protobuf-c-compiler \
+            libcurl4-openssl-dev
+            
+      - name: Configure meson build
+        run: |
+          env -u PYENV_ROOT -u PYENV_SHELL \
+            PATH="/usr/bin:/usr/local/bin:/bin:/usr/sbin:/sbin:$PATH" \
+            meson setup build/ \
+              --buildtype=release \
+              -Dsgx=enabled \
+              -Ddirect=disabled \
+              -Dlibc=none \
+              -Dtests=disabled
+              
+      - name: Compile RA-TLS libraries
+        run: |
+          ninja -C build/ \
+            tools/sgx/ra-tls/libra_tls_attest.so \
+            tools/sgx/ra-tls/libsecret_prov_attest.so
+            
+      - name: Copy compiled libraries to prebuilt directory
+        run: |
+          cp build/tools/sgx/ra-tls/libra_tls_attest.so tools/sgx/ra-tls/prebuilt/
+          cp build/tools/sgx/ra-tls/libsecret_prov_attest.so tools/sgx/ra-tls/prebuilt/
+          
+      - name: Check if libraries changed
+        id: check_changes
+        run: |
+          git add tools/sgx/ra-tls/prebuilt/*.so
+          if git diff --cached --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes to prebuilt libraries"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Prebuilt libraries have changed"
+          fi
+          
+      - name: Commit and push prebuilt libraries
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "Auto-compile: Update prebuilt RA-TLS libraries
+
+Automatically compiled and updated prebuilt libraries after source code changes.
+
+Link to workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push origin master
