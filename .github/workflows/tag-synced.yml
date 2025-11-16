@@ -1,0 +1,64 @@
+name: Mark Upstream Synced
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.title, 'Upstream sync:')
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create synced tag
+        run: |
+          set -e
+          TITLE="${{ github.event.pull_request.title }}"
+          echo "PR Title: $TITLE"
+          
+          # Extract tag from title format: "Upstream sync: org/repo @ vX.Y.Z"
+          TAG=$(echo "$TITLE" | awk -F'@' '{gsub(/ /,"",$2); print $2}')
+          
+          if [ -n "$TAG" ]; then
+            echo "Creating tag: synced/$TAG"
+            
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            # Create annotated tag
+            git tag -a "synced/$TAG" "${{ github.event.pull_request.merge_commit_sha }}" -m "Synced to upstream $TAG" -m "PR: ${{ github.event.pull_request.html_url }}"
+            
+            # Push the tag
+            git push origin "synced/$TAG"
+            
+            echo "Successfully created and pushed tag: synced/$TAG"
+          else
+            echo "Could not parse tag from PR title; skipping tag creation."
+            echo "Expected format: 'Upstream sync: org/repo @ <tag>'"
+          fi
+
+      - name: Comment on PR
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '${{ github.event.pull_request.title }}';
+            const tag = title.split('@')[1]?.trim();
+            
+            if (tag) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: `Successfully tagged this sync as \`synced/${tag}\` 🎉`
+              });
+            }
