@@ -10,6 +10,9 @@ on:
       - 'tools/sgx/ra-tls/secret_prov_*.c'
       - 'tools/sgx/ra-tls/meson.build'
 
+permissions:
+  contents: write
+
 jobs:
   compile-and-commit:
     runs-on: ubuntu-22.04
@@ -25,7 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             python3 python3-pip python3-dev \
-            ninja-build meson \
+            ninja-build meson pkg-config cmake build-essential \
             libprotobuf-c-dev protobuf-c-compiler \
             libcurl4-openssl-dev
             
@@ -38,7 +41,8 @@ jobs:
               -Dsgx=enabled \
               -Ddirect=disabled \
               -Dlibc=none \
-              -Dtests=disabled
+              -Dtests=disabled \
+              -Ddcap=auto
               
       - name: Compile RA-TLS libraries
         run: |
