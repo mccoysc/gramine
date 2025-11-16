@@ -236,6 +236,22 @@ static char* get_directory_from_path(const char* file_path) {
     return dir;
 }
 
+/* Helper function to extract basename from file path */
+static const char* get_basename_from_path(const char* file_path) {
+    if (!file_path) {
+        return NULL;
+    }
+    
+    const char* last_slash = strrchr(file_path, '/');
+    if (!last_slash) {
+        /* No directory separator, return the whole path */
+        return file_path;
+    }
+    
+    /* Return pointer to character after last slash */
+    return last_slash + 1;
+}
+
 /* Helper function to get PK type name */
 static const char* get_pk_type_name(mbedtls_pk_type_t pk_type) {
     switch (pk_type) {
@@ -1395,9 +1411,8 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
             /* Validate that user-specified MD is compatible with CA key */
             mbedtls_md_type_t recommended_md = get_recommended_md_for_key(&ca_key_ctx);
             if (recommended_md != md_type) {
-                printf("RA-TLS: WARNING: User-specified signature_md=%s may be incompatible with CA key\n",
-                       get_md_name(md_type));
-                printf("RA-TLS: WARNING: CA key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
+                printf("RA-TLS: ERROR: User-specified signature_md is incompatible with CA key\n");
+                printf("RA-TLS: ERROR: CA key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
                 
                 mbedtls_pk_type_t pk_type = mbedtls_pk_get_type(&ca_key_ctx);
                 if (pk_type == MBEDTLS_PK_ECKEY || pk_type == MBEDTLS_PK_ECDSA) {
@@ -1408,14 +1423,22 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                         if (grp_id == MBEDTLS_ECP_DP_SECP256R1) curve_name = "P-256";
                         else if (grp_id == MBEDTLS_ECP_DP_SECP384R1) curve_name = "P-384";
                         else if (grp_id == MBEDTLS_ECP_DP_SECP521R1) curve_name = "P-521";
-                        printf("RA-TLS: WARNING: CA key curve: %s\n", curve_name);
+                        printf("RA-TLS: ERROR: CA key curve: %s\n", curve_name);
                     }
                 }
                 
-                printf("RA-TLS: WARNING: Recommended signature_md for this CA key: %s\n", 
+                printf("RA-TLS: ERROR: User-specified signature_md: %s\n", get_md_name(md_type));
+                printf("RA-TLS: ERROR: Required signature_md for this CA key: %s\n", 
                        get_md_name(recommended_md));
-                printf("RA-TLS: WARNING: To fix: either remove 'signature_md' from JSON (auto-detect) or set it to '%s'\n",
+                printf("RA-TLS: ERROR: To fix: either remove 'signature_md' from JSON config (auto-detect) or set it to '%s'\n",
                        get_md_name(recommended_md));
+                
+                ret = MBEDTLS_ERR_X509_INVALID_ALG;
+                mbedtls_pk_free(&ca_key_ctx);
+                mbedtls_x509_crt_free(ca_crt_heap);
+                free(ca_crt_heap);
+                ca_crt_heap = NULL;
+                goto out_json;
             }
         }
         
@@ -1735,7 +1758,19 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                         snprintf(ca_path_buf, sizeof(ca_path_buf), "%s", ca_cert_file_path);
                     } else if (json_config.ca_key_file) {
                         /* Case B: CA key was provided, write cert next to CA key file */
-                        snprintf(ca_path_buf, sizeof(ca_path_buf), "crt.%s.crt", json_config.ca_key_file);
+                        /* Extract directory and basename from CA key file path */
+                        char* ca_key_dir = get_directory_from_path(json_config.ca_key_file);
+                        const char* ca_key_basename = get_basename_from_path(json_config.ca_key_file);
+                        
+                        if (ca_key_dir && ca_key_basename) {
+                            snprintf(ca_path_buf, sizeof(ca_path_buf), "%s/crt.%s.crt", 
+                                    ca_key_dir, ca_key_basename);
+                        } else {
+                            /* Fallback if path parsing fails */
+                            snprintf(ca_path_buf, sizeof(ca_path_buf), "./ca.crt");
+                        }
+                        
+                        free(ca_key_dir);
                     } else {
                         /* Fallback */
                         snprintf(ca_path_buf, sizeof(ca_path_buf), "./ca.crt");
