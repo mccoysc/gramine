@@ -324,6 +324,41 @@ static mbedtls_md_type_t parse_signature_md(const char* md_str) {
     return MBEDTLS_MD_SHA256;
 }
 
+/* Auto-detect appropriate hash algorithm based on key type and curve */
+static mbedtls_md_type_t get_recommended_md_for_key(mbedtls_pk_context* key) {
+    if (!key) {
+        return MBEDTLS_MD_SHA256;  /* default */
+    }
+    
+    mbedtls_pk_type_t pk_type = mbedtls_pk_get_type(key);
+    
+    if (pk_type == MBEDTLS_PK_ECKEY || pk_type == MBEDTLS_PK_ECDSA) {
+        /* For EC keys, match hash size to curve size */
+        mbedtls_ecp_keypair* ec = mbedtls_pk_ec(*key);
+        if (ec) {
+            mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(ec);
+            switch (grp_id) {
+                case MBEDTLS_ECP_DP_SECP521R1:
+                    return MBEDTLS_MD_SHA512;  /* P-521 -> SHA-512 */
+                case MBEDTLS_ECP_DP_SECP384R1:
+                case MBEDTLS_ECP_DP_BP384R1:
+                    return MBEDTLS_MD_SHA384;  /* P-384 -> SHA-384 */
+                case MBEDTLS_ECP_DP_SECP256R1:
+                case MBEDTLS_ECP_DP_SECP256K1:
+                case MBEDTLS_ECP_DP_BP256R1:
+                default:
+                    return MBEDTLS_MD_SHA256;  /* P-256 and others -> SHA-256 */
+            }
+        }
+    } else if (pk_type == MBEDTLS_PK_RSA) {
+        /* For RSA keys, use SHA-256 as default (can handle any RSA key size) */
+        return MBEDTLS_MD_SHA256;
+    }
+    
+    /* Default fallback */
+    return MBEDTLS_MD_SHA256;
+}
+
 /*! given public key \p pk, generate an RA-TLS certificate \p writecrt with \p quote (legacy format)
  *  and \p evidence (new standard format) embedded */
 static int generate_x509(mbedtls_pk_context* pk, const uint8_t* quote, size_t quote_size,
@@ -1161,8 +1196,8 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;  /* default */
     if (use_json && json_config.signature_md) {
         md_type = parse_signature_md(json_config.signature_md);
+        printf("RA-TLS: User-specified signature MD algorithm: %s\n", get_md_name(md_type));
     }
-    printf("RA-TLS: Using signature MD algorithm: %s\n", get_md_name(md_type));
     
     /* Handle CA certificate and key if JSON config has ca_key_file */
     printf("RA-TLS: ========== CA Certificate Handling ==========\n");
@@ -1221,6 +1256,18 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         
         printf("RA-TLS: CA key loaded successfully, type=%s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
         ca_key_ptr = &ca_key_ctx;
+        
+        /* Auto-detect signature MD based on CA key if not specified by user */
+        if (!json_config.signature_md) {
+            mbedtls_md_type_t recommended_md = get_recommended_md_for_key(&ca_key_ctx);
+            if (recommended_md != md_type) {
+                printf("RA-TLS: Auto-detected signature MD for CA key: %s (was %s)\n", 
+                       get_md_name(recommended_md), get_md_name(md_type));
+                md_type = recommended_md;
+            }
+        } else {
+            printf("RA-TLS: Using user-specified signature MD: %s\n", get_md_name(md_type));
+        }
         
         /* Case A: Load existing CA certificate if ca_cert_file is provided */
         if (json_config.ca_cert_file) {
@@ -1286,6 +1333,16 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         }
     } else {
         printf("RA-TLS: No CA key specified, will generate self-signed certificate\n");
+        
+        /* Auto-detect signature MD based on user key if not specified by user (self-signed case) */
+        if (!json_config.signature_md) {
+            mbedtls_md_type_t recommended_md = get_recommended_md_for_key(key);
+            if (recommended_md != md_type) {
+                printf("RA-TLS: Auto-detected signature MD for self-signed leaf key: %s (was %s)\n", 
+                       get_md_name(recommended_md), get_md_name(md_type));
+                md_type = recommended_md;
+            }
+        }
     }
     printf("RA-TLS: =================================================\n");
     
