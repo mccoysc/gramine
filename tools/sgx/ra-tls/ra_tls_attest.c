@@ -289,6 +289,7 @@ typedef struct {
     /* CA certificate fields (for using existing CA to sign) */
     char* ca_key_file;
     char* ca_key_format;  /* "pem" or "der" */
+    char* ca_algorithm;  /* algorithm for CA key/cert generation */
     char* ca_cert_file;  /* path to existing CA certificate file */
     char* ca_cert_format;  /* "pem" or "der" */
     char* ca_subject;
@@ -395,6 +396,7 @@ static int parse_json_config(const char* b64_json, cert_config_t* config) {
     /* CA fields (for using existing CA to sign) */
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_key_file", &config->ca_key_file);
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_key_format", &config->ca_key_format);
+    json_get_string((const char*)json_buf, tokens, num_tokens, "ca_algorithm", &config->ca_algorithm);
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_cert_file", &config->ca_cert_file);
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_cert_format", &config->ca_cert_format);
     json_get_string((const char*)json_buf, tokens, num_tokens, "ca_subject", &config->ca_subject);
@@ -416,6 +418,7 @@ static void free_cert_config(cert_config_t* config) {
     free(config->signature_md);
     free(config->ca_key_file);
     free(config->ca_key_format);
+    free(config->ca_algorithm);
     free(config->ca_cert_file);
     free(config->ca_cert_format);
     free(config->ca_subject);
@@ -1347,6 +1350,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
             printf("RA-TLS: JSON config - is_ca: %s\n", json_config.is_ca ? "true" : "false");
             printf("RA-TLS: JSON config - ca_key_file: %s\n", json_config.ca_key_file ? json_config.ca_key_file : "(not set)");
             printf("RA-TLS: JSON config - ca_key_format: %s\n", json_config.ca_key_format ? json_config.ca_key_format : "(not set)");
+            printf("RA-TLS: JSON config - ca_algorithm: %s\n", json_config.ca_algorithm ? json_config.ca_algorithm : "(not set)");
             printf("RA-TLS: JSON config - ca_cert_file: %s\n", json_config.ca_cert_file ? json_config.ca_cert_file : "(not set)");
             printf("RA-TLS: JSON config - ca_cert_format: %s\n", json_config.ca_cert_format ? json_config.ca_cert_format : "(not set)");
             printf("RA-TLS: JSON config - ca_subject: %s\n", json_config.ca_subject ? json_config.ca_subject : "(not set)");
@@ -1692,28 +1696,89 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                 printf("RA-TLS: CA key loaded successfully, type=%s\n", get_pk_type_name(mbedtls_pk_get_type(&ca_key_ctx)));
                 ca_key_ptr = &ca_key_ctx;
             } else {
-                /* Generate CA key with same algorithm as user key */
+                /* Generate CA key - check if user specified ca_algorithm */
                 printf("RA-TLS: Generating new CA key (no ca_key_file exists)\n");
-                mbedtls_pk_type_t user_pk_type = mbedtls_pk_get_type(key);
-                printf("RA-TLS: Generating CA key with same algorithm as user key: %s\n", 
-                       get_pk_type_name(user_pk_type));
                 
-                ret = mbedtls_pk_setup(&ca_key_ctx, mbedtls_pk_info_from_type(user_pk_type));
-                if (ret < 0) {
-                    log_mbedtls_error("CA PK setup", ret);
-                    mbedtls_pk_free(&ca_key_ctx);
-                    mbedtls_x509_crt_free(ca_crt_heap);
-                    free(ca_crt_heap);
-                    ca_crt_heap = NULL;
-                    goto out_json;
+                const algorithm_config_t* ca_algo_config = NULL;
+                
+                /* Check if user specified ca_algorithm in JSON */
+                if (json_config.ca_algorithm) {
+                    printf("RA-TLS: User specified ca_algorithm: %s\n", json_config.ca_algorithm);
+                    
+                    /* Find the algorithm configuration */
+                    for (size_t i = 0; i < NUM_SUPPORTED_ALGORITHMS; i++) {
+                        if (strcasecmp(g_supported_algorithms[i].name, json_config.ca_algorithm) == 0) {
+                            ca_algo_config = &g_supported_algorithms[i];
+                            break;
+                        }
+                    }
+                    
+                    if (!ca_algo_config) {
+                        printf("RA-TLS: WARNING: CA algorithm '%s' not found, will use same algorithm as user key\n", 
+                               json_config.ca_algorithm);
+                    } else {
+                        printf("RA-TLS: Using user-specified CA algorithm: %s (type=%s)\n", 
+                               ca_algo_config->name, get_pk_type_name(ca_algo_config->pk_type));
+                    }
                 }
                 
-                /* Generate CA key based on user key algorithm type */
-                if (user_pk_type == MBEDTLS_PK_ECKEY || user_pk_type == MBEDTLS_PK_ECDSA) {
-                    /* Get EC curve from user key */
-                    mbedtls_ecp_keypair* user_ec = mbedtls_pk_ec(*key);
-                    if (!user_ec) {
-                        printf("RA-TLS: ERROR: Failed to get EC keypair from user key\n");
+                /* If no ca_algorithm specified or not found, use same algorithm as user key */
+                if (!ca_algo_config) {
+                    printf("RA-TLS: No valid ca_algorithm specified, using same algorithm as user key\n");
+                    mbedtls_pk_type_t user_pk_type = mbedtls_pk_get_type(key);
+                    printf("RA-TLS: User key type: %s\n", get_pk_type_name(user_pk_type));
+                    
+                    ret = mbedtls_pk_setup(&ca_key_ctx, mbedtls_pk_info_from_type(user_pk_type));
+                    if (ret < 0) {
+                        log_mbedtls_error("CA PK setup", ret);
+                        mbedtls_pk_free(&ca_key_ctx);
+                        mbedtls_x509_crt_free(ca_crt_heap);
+                        free(ca_crt_heap);
+                        ca_crt_heap = NULL;
+                        goto out_json;
+                    }
+                    
+                    /* Generate CA key based on user key algorithm type */
+                    if (user_pk_type == MBEDTLS_PK_ECKEY || user_pk_type == MBEDTLS_PK_ECDSA) {
+                        /* Get EC curve from user key */
+                        mbedtls_ecp_keypair* user_ec = mbedtls_pk_ec(*key);
+                        if (!user_ec) {
+                            printf("RA-TLS: ERROR: Failed to get EC keypair from user key\n");
+                            ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                        mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(user_ec);
+                        printf("RA-TLS:   Generating CA EC key with curve ID: %d\n", grp_id);
+                        ret = mbedtls_ecp_gen_key(grp_id, mbedtls_pk_ec(ca_key_ctx),
+                                                  mbedtls_ctr_drbg_random, &ctr_drbg);
+                        if (ret < 0) {
+                            log_mbedtls_error("CA EC key generation", ret);
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                    } else if (user_pk_type == MBEDTLS_PK_RSA) {
+                        /* Get RSA bit length from user key */
+                        size_t user_key_bits = mbedtls_pk_get_bitlen(key);
+                        printf("RA-TLS:   Generating CA RSA key (%zu bits)\n", user_key_bits);
+                        ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(ca_key_ctx), mbedtls_ctr_drbg_random, &ctr_drbg,
+                                                  user_key_bits, 65537);
+                        if (ret < 0) {
+                            log_mbedtls_error("CA RSA key generation", ret);
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                    } else {
+                        printf("RA-TLS: ERROR: Unsupported user key type for CA key generation\n");
                         ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
                         mbedtls_pk_free(&ca_key_ctx);
                         mbedtls_x509_crt_free(ca_crt_heap);
@@ -1721,40 +1786,54 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                         ca_crt_heap = NULL;
                         goto out_json;
                     }
-                    mbedtls_ecp_group_id grp_id = mbedtls_ecp_keypair_get_group_id(user_ec);
-                    printf("RA-TLS:   Generating CA EC key with curve ID: %d\n", grp_id);
-                    ret = mbedtls_ecp_gen_key(grp_id, mbedtls_pk_ec(ca_key_ctx),
-                                              mbedtls_ctr_drbg_random, &ctr_drbg);
-                    if (ret < 0) {
-                        log_mbedtls_error("CA EC key generation", ret);
-                        mbedtls_pk_free(&ca_key_ctx);
-                        mbedtls_x509_crt_free(ca_crt_heap);
-                        free(ca_crt_heap);
-                        ca_crt_heap = NULL;
-                        goto out_json;
-                    }
-                } else if (user_pk_type == MBEDTLS_PK_RSA) {
-                    /* Get RSA bit length from user key */
-                    size_t user_key_bits = mbedtls_pk_get_bitlen(key);
-                    printf("RA-TLS:   Generating CA RSA key (%zu bits)\n", user_key_bits);
-                    ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(ca_key_ctx), mbedtls_ctr_drbg_random, &ctr_drbg,
-                                              user_key_bits, 65537);
-                    if (ret < 0) {
-                        log_mbedtls_error("CA RSA key generation", ret);
-                        mbedtls_pk_free(&ca_key_ctx);
-                        mbedtls_x509_crt_free(ca_crt_heap);
-                        free(ca_crt_heap);
-                        ca_crt_heap = NULL;
-                        goto out_json;
-                    }
                 } else {
-                    printf("RA-TLS: ERROR: Unsupported user key type for CA key generation\n");
-                    ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
-                    mbedtls_pk_free(&ca_key_ctx);
-                    mbedtls_x509_crt_free(ca_crt_heap);
-                    free(ca_crt_heap);
-                    ca_crt_heap = NULL;
-                    goto out_json;
+                    /* Use user-specified ca_algorithm */
+                    printf("RA-TLS: Generating CA key with user-specified algorithm: %s\n", ca_algo_config->name);
+                    
+                    ret = mbedtls_pk_setup(&ca_key_ctx, mbedtls_pk_info_from_type(ca_algo_config->pk_type));
+                    if (ret < 0) {
+                        log_mbedtls_error("CA PK setup", ret);
+                        mbedtls_pk_free(&ca_key_ctx);
+                        mbedtls_x509_crt_free(ca_crt_heap);
+                        free(ca_crt_heap);
+                        ca_crt_heap = NULL;
+                        goto out_json;
+                    }
+                    
+                    /* Generate CA key based on specified algorithm type */
+                    if (ca_algo_config->pk_type == MBEDTLS_PK_ECKEY) {
+                        printf("RA-TLS:   Generating CA EC key with curve ID: %d\n", ca_algo_config->params.ecp_group_id);
+                        ret = mbedtls_ecp_gen_key(ca_algo_config->params.ecp_group_id, mbedtls_pk_ec(ca_key_ctx),
+                                                  mbedtls_ctr_drbg_random, &ctr_drbg);
+                        if (ret < 0) {
+                            log_mbedtls_error("CA EC key generation", ret);
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                    } else if (ca_algo_config->pk_type == MBEDTLS_PK_RSA) {
+                        printf("RA-TLS:   Generating CA RSA key (%u bits)\n", ca_algo_config->params.rsa_key_size);
+                        ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(ca_key_ctx), mbedtls_ctr_drbg_random, &ctr_drbg,
+                                                  ca_algo_config->params.rsa_key_size, 65537);
+                        if (ret < 0) {
+                            log_mbedtls_error("CA RSA key generation", ret);
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                    } else {
+                        printf("RA-TLS: ERROR: Unsupported CA algorithm type\n");
+                        ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                        mbedtls_pk_free(&ca_key_ctx);
+                        mbedtls_x509_crt_free(ca_crt_heap);
+                        free(ca_crt_heap);
+                        ca_crt_heap = NULL;
+                        goto out_json;
+                    }
                 }
                 
                 printf("RA-TLS: CA key generated successfully\n");
