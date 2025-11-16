@@ -7,10 +7,12 @@ on:
     paths:
       - '.github/workflows/auto-compile-ratls.yml'
       - 'tools/sgx/ra-tls/**'
+      - '!tools/sgx/ra-tls/prebuilt/**'
   pull_request:
     paths:
       - '.github/workflows/auto-compile-ratls.yml'
       - 'tools/sgx/ra-tls/**'
+      - '!tools/sgx/ra-tls/prebuilt/**'
   workflow_dispatch:
 
 permissions:
@@ -101,7 +103,7 @@ jobs:
           fi
           
       - name: Commit and push prebuilt libraries
-        if: steps.check_changes.outputs.changed == 'true'
+        if: steps.check_changes.outputs.changed == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -109,3 +111,12 @@ jobs:
                      -m "Automatically compiled and updated prebuilt libraries after source code changes." \
                      -m "Link to workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           git push origin master
+          
+      - name: Upload prebuilt artifacts (PR only)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ratls-prebuilt-libs
+          path: |
+            build/tools/sgx/ra-tls/libra_tls_attest.so
+            build/tools/sgx/ra-tls/libsecret_prov_attest.so
