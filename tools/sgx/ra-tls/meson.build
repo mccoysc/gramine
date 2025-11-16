@@ -190,6 +190,32 @@ pkgconfig.generate(
     ],
 )
 
+libratls_quote_verify = shared_library('ratls-quote-verify',
+    'libratls-quote-verify.c',
+
+    link_args: ['-ldl'],
+    link_with: [libra_tls_attest, libra_tls_verify],
+    include_directories: [pal_sgx_inc, include_directories('.')],
+    dependencies: [
+        libcbor_dep,
+        mbedtls_static_dep,
+        sgx_util_dep,
+        threads_dep,
+    ],
+    install: true,
+)
+if get_option('libc') == 'glibc' and host_has_glibc
+    meson.add_install_script('/bin/sh', '-c',
+        'ln -sf ../../../libratls-quote-verify.so ' +
+        '"$MESON_INSTALL_DESTDIR_PREFIX"/@0@/gramine/runtime/@1@/'.format(
+            get_option('libdir'), get_option('libc')))
+endif
+
+# Copy compiled library to prebuilt directory
+meson.add_install_script('/bin/sh', '-c',
+    'cp "$MESON_BUILD_ROOT"/tools/sgx/ra-tls/libratls-quote-verify.so ' +
+    '"$MESON_SOURCE_ROOT"/tools/sgx/ra-tls/prebuilt/')
+
 executable('gramine-ratls',
     'gramine-ratls.c',
     link_with: libra_tls_attest,
