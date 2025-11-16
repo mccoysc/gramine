@@ -1647,9 +1647,19 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     printf("RA-TLS: Leaf not_after: %s\n", not_after ? not_after : "(using default/env)");
     printf("RA-TLS: Leaf is_ca flag: %s\n", is_ca ? "true" : "false");
     printf("RA-TLS: Issuer subject: %s\n", ca_subject_ptr ? ca_subject_ptr : "(same as leaf - self-signed)");
-    printf("RA-TLS: Signature MD: %s\n", get_md_name(md_type));
     
-    ret = create_x509(key, &writecrt, ca_key_ptr, ca_subject_ptr, subject, not_before, not_after, md_type, is_ca);
+    /* Determine signature MD for leaf certificate:
+     * - If CA-signed: must use hash algorithm compatible with CA key (issuer determines signature)
+     * - If self-signed: use user-specified or auto-detected hash from leaf key */
+    mbedtls_md_type_t leaf_md_type = md_type;
+    if (ca_key_ptr) {
+        leaf_md_type = get_recommended_md_for_key(ca_key_ptr);
+        printf("RA-TLS: Leaf signature MD: %s (derived from CA key)\n", get_md_name(leaf_md_type));
+    } else {
+        printf("RA-TLS: Leaf signature MD: %s (self-signed)\n", get_md_name(leaf_md_type));
+    }
+    
+    ret = create_x509(key, &writecrt, ca_key_ptr, ca_subject_ptr, subject, not_before, not_after, leaf_md_type, is_ca);
     
     /* Clean up CA key (but keep ca_crt_heap for chain linking) */
     if (ca_key_ptr) {
