@@ -30,7 +30,22 @@ jobs:
             python3 python3-pip python3-dev \
             ninja-build meson pkg-config cmake build-essential \
             libprotobuf-c-dev protobuf-c-compiler \
-            libcurl4-openssl-dev
+            libcurl4-openssl-dev \
+            nasm
+            
+      - name: Install Intel SGX DCAP dependencies
+        run: |
+          # Add Intel SGX APT repository
+          curl -fsSL https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | sudo gpg --dearmor -o /usr/share/keyrings/intel-sgx.gpg
+          echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/intel-sgx.gpg] https://download.01.org/intel-sgx/sgx_repo/ubuntu jammy main' | sudo tee /etc/apt/sources.list.d/intel-sgx.list
+          sudo apt-get update
+          
+          # Install DCAP development libraries
+          sudo apt-get install -y \
+            libsgx-dcap-ql-dev \
+            libsgx-dcap-quote-verify-dev \
+            libsgx-headers \
+            libsgx-urts
             
       - name: Configure meson build
         run: |
@@ -42,7 +57,7 @@ jobs:
               -Ddirect=disabled \
               -Dlibc=none \
               -Dtests=disabled \
-              -Ddcap=auto
+              -Ddcap=enabled
               
       - name: Compile RA-TLS libraries
         run: |
