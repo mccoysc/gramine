@@ -1054,6 +1054,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     bool ca_was_generated = false;  /* Track if CA was generated (not loaded) */
     
     if (use_json && json_config.ca_key_file) {
+        printf("RA-TLS: Using CA key from file: %s\n", json_config.ca_key_file);
         /* Initialize CA key context and allocate CA cert on heap */
         mbedtls_pk_init(&ca_key_ctx);
         ca_crt_heap = malloc(sizeof(mbedtls_x509_crt));
@@ -1081,6 +1082,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                                        mbedtls_ctr_drbg_random, &ctr_drbg);
         }
         if (ret < 0) {
+            printf("RA-TLS: Failed to load CA key from file: %s\n", json_config.ca_key_file);
             mbedtls_pk_free(&ca_key_ctx);
             mbedtls_x509_crt_free(ca_crt_heap);
             free(ca_crt_heap);
@@ -1092,6 +1094,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         
         /* Case A: Load existing CA certificate if ca_cert_file is provided */
         if (json_config.ca_cert_file) {
+            printf("RA-TLS: Using CA certificate from file: %s\n", json_config.ca_cert_file);
             ret = load_and_verify_ca_certificate(json_config.ca_cert_file, json_config.ca_cert_format,
                                                 &ca_key_ctx, ca_crt_heap, &ctr_drbg);
             if (ret < 0) {
@@ -1118,6 +1121,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         }
         /* Case B: Generate CA certificate if ca_subject is provided but ca_cert_file is not */
         else if (json_config.ca_subject) {
+            printf("RA-TLS: Generating new CA certificate with subject: %s\n", json_config.ca_subject);
             ret = generate_ca_certificate(&ca_key_ctx, ca_crt_heap, json_config.ca_subject,
                                          json_config.ca_not_before, json_config.ca_not_after,
                                          md_type, &ctr_drbg);
@@ -1135,6 +1139,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         }
         /* Error: ca_key provided but neither ca_cert_file nor ca_subject */
         else {
+            printf("RA-TLS: CA key provided but neither CA certificate file nor CA subject specified\n");
             mbedtls_pk_free(&ca_key_ctx);
             mbedtls_x509_crt_free(ca_crt_heap);
             free(ca_crt_heap);
@@ -1162,6 +1167,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     
     if (ret < 0) {
         /* On error, clean up CA cert */
+        printf("RA-TLS: Failed to create X.509 certificate\n");
         if (ca_crt_heap) {
             mbedtls_x509_crt_free(ca_crt_heap);
             free(ca_crt_heap);
@@ -1173,6 +1179,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     int size = mbedtls_x509write_crt_der(&writecrt, output_buf, output_buf_size,
                                          mbedtls_ctr_drbg_random, &ctr_drbg);
     if (size < 0) {
+        printf("RA-TLS: Failed to write X.509 certificate in DER format\n");
         ret = size;
         goto out_json;
     }
@@ -1180,6 +1187,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     if (crt_der && crt_der_size) {
         crt_der_buf = malloc(size);
         if (!crt_der_buf) {
+            printf("RA-TLS: Failed to allocate memory for DER certificate\n");
             ret = MBEDTLS_ERR_X509_ALLOC_FAILED;
             goto out_json;
         }
@@ -1191,9 +1199,11 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     }
 
     if (crt) {
+        printf("RA-TLS: Parsing generated X.509 certificate\n");
         ret = mbedtls_x509_crt_parse_der(crt, output_buf + output_buf_size - size, size);
         if (ret < 0) {
             /* On error, clean up CA cert */
+            printf("RA-TLS: Failed to parse generated X.509 certificate\n");
             if (ca_crt_heap) {
                 mbedtls_x509_crt_free(ca_crt_heap);
                 free(ca_crt_heap);
@@ -1212,7 +1222,11 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                 /* CA cert is already in DER format in the chain, extract and write it */
                 /* The raw DER data is in crt->next->raw.p with length crt->next->raw.len */
                 if (crt->next->raw.p && crt->next->raw.len > 0) {
-                    write_file("ca.crt", crt->next->raw.p, crt->next->raw.len);
+                    char[1024] ca_path_buf={0};
+                    snprintf(ca_path_buf, sizeof(ca_path_buf), "%s.ca.crt",
+                             json_config.ca_key_file ? json_config.ca_key_file : "./ca_key");
+                    printf("RA-TLS: Writing generated CA certificate to file: %s\n", ca_path_buf);
+                    write_file(ca_path_buf, crt->next->raw.p, crt->next->raw.len);
                 }
                 /* Ignore errors writing CA cert file - not critical */
             }
