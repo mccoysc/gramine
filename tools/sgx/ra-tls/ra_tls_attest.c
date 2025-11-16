@@ -1222,7 +1222,7 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                 /* CA cert is already in DER format in the chain, extract and write it */
                 /* The raw DER data is in crt->next->raw.p with length crt->next->raw.len */
                 if (crt->next->raw.p && crt->next->raw.len > 0) {
-                    char[1024] ca_path_buf={0};
+                    char ca_path_buf[1024] = {0};
                     snprintf(ca_path_buf, sizeof(ca_path_buf), "%s.ca.crt",
                              json_config.ca_key_file ? json_config.ca_key_file : "./ca_key");
                     printf("RA-TLS: Writing generated CA certificate to file: %s\n", ca_path_buf);
