@@ -1698,10 +1698,6 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     
     ret = create_x509(key, &writecrt, ca_key_ptr, ca_subject_ptr, subject, not_before, not_after, leaf_md_type, is_ca);
     
-    /* Clean up CA key (but keep ca_crt_heap for chain linking) */
-    if (ca_key_ptr) {
-        mbedtls_pk_free(&ca_key_ctx);
-    }
     free(ca_subject_from_cert);
     
     if (ret < 0) {
@@ -1715,12 +1711,35 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
         goto out_json;
     }
 
+    /* Additional diagnostic logging before DER write */
+    printf("RA-TLS: ========== Pre-DER-Write Diagnostics ==========\n");
+    if (ca_key_ptr) {
+        mbedtls_pk_type_t issuer_type = mbedtls_pk_get_type(ca_key_ptr);
+        printf("RA-TLS:   Issuer key type (numeric): %d\n", issuer_type);
+        printf("RA-TLS:   Issuer key type (string): %s\n", get_pk_type_name(issuer_type));
+        printf("RA-TLS:   Issuer can_do ECDSA: %d\n", mbedtls_pk_can_do(ca_key_ptr, MBEDTLS_PK_ECDSA));
+    }
+    const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(leaf_md_type);
+    printf("RA-TLS:   MD info for leaf_md_type (%d): %s\n", leaf_md_type, md_info ? "valid" : "NULL");
+    printf("RA-TLS: =================================================\n");
+    
     int size = mbedtls_x509write_crt_der(&writecrt, output_buf, output_buf_size,
                                          mbedtls_ctr_drbg_random, &ctr_drbg);
     if (size < 0) {
         printf("RA-TLS: Failed to write X.509 certificate in DER format\n");
+        printf("RA-TLS:   Error code: %d (0x%04x)\n", size, -size);
+        log_mbedtls_error("Leaf certificate DER write", size);
         ret = size;
+        /* Clean up CA key on error */
+        if (ca_key_ptr) {
+            mbedtls_pk_free(&ca_key_ctx);
+        }
         goto out_json;
+    }
+    
+    /* DER write succeeded, now safe to clean up CA key (but keep ca_crt_heap for chain linking) */
+    if (ca_key_ptr) {
+        mbedtls_pk_free(&ca_key_ctx);
     }
 
     if (crt_der && crt_der_size) {
