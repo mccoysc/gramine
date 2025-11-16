@@ -1,0 +1,280 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref (tag/branch/sha). Default: latest release"
+        required: false
+        type: string
+  repository_dispatch:
+    types: [upstream-release]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: gramineproject/gramine
+  UPSTREAM_BRANCH: master
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote and fetch
+        run: |
+          git remote add upstream https://github.com/${UPSTREAM_REPO}.git || git remote set-url upstream https://github.com/${UPSTREAM_REPO}.git
+          git fetch upstream --tags --prune
+
+      - name: Determine target upstream ref
+        id: detect
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const upstream = process.env.UPSTREAM_REPO.split('/');
+            const owner = upstream[0], repo = upstream[1];
+            const userInput = context.payload.inputs?.upstream_ref || '';
+            
+            if (userInput) {
+              core.setOutput('target_ref', userInput);
+              core.info(`Using user-specified ref: ${userInput}`);
+              return;
+            }
+            
+            // Try latest release first
+            let tag = null;
+            try {
+              const rel = await github.rest.repos.getLatestRelease({ owner, repo });
+              tag = rel.data.tag_name;
+              core.info(`Found latest release: ${tag}`);
+            } catch (e) {
+              core.info('No latest release found, falling back to tags...');
+              const tags = await github.rest.repos.listTags({ owner, repo, per_page: 1 });
+              if (tags.data.length > 0) {
+                tag = tags.data[0].name;
+                core.info(`Found latest tag: ${tag}`);
+              }
+            }
+            
+            if (!tag) {
+              core.setFailed('Could not determine an upstream release/tag to sync');
+              return;
+            }
+            
+            core.setOutput('target_ref', tag);
+
+      - name: Check if already synced
+        id: check
+        run: |
+          git fetch --tags --quiet
+          TARGET="${{ steps.detect.outputs.target_ref }}"
+          if git tag -l "synced/${TARGET}" | grep -q .; then
+            echo "already=true" >> $GITHUB_OUTPUT
+            echo "Already synced to ${TARGET}"
+          else
+            echo "already=false" >> $GITHUB_OUTPUT
+            echo "Not yet synced to ${TARGET}"
+          fi
+
+      - name: Stop if already synced
+        if: steps.check.outputs.already == 'true'
+        run: |
+          echo "Already synced to ${{ steps.detect.outputs.target_ref }}. Exiting."
+          exit 0
+
+      - name: Prepare branch
+        if: steps.check.outputs.already != 'true'
+        id: prep
+        run: |
+          set -euo pipefail
+          TS=$(date +%s)
+          TARGET="${{ steps.detect.outputs.target_ref }}"
+          # Replace slashes with hyphens for branch name
+          BRANCH="devin/${TS}-sync-upstream-${TARGET//\//-}"
+          git switch -c "$BRANCH"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "Created branch: $BRANCH"
+
+      - name: Attempt merge from upstream
+        if: steps.check.outputs.already != 'true'
+        id: merge
+        run: |
+          set -e
+          TARGET="${{ steps.detect.outputs.target_ref }}"
+          MERGE_REF="upstream/${UPSTREAM_BRANCH}"
+          
+          # Prefer tag if exists
+          if git show-ref --tags --verify --quiet "refs/tags/${TARGET}"; then
+            MERGE_REF="refs/tags/${TARGET}"
+            echo "Merging from tag: ${MERGE_REF}"
+          else
+            echo "Merging from branch: ${MERGE_REF}"
+          fi
+          
+          # Try plain 3-way merge first
+          set +e
+          git merge --no-ff --no-edit "$MERGE_REF" -m "Merge upstream ${TARGET}" -m "Syncing changes from ${UPSTREAM_REPO} @ ${TARGET}"
+          EC=$?
+          set -e
+          
+          if [ $EC -ne 0 ]; then
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            echo "Merge conflicts detected"
+            
+            # Collect conflict details then abort merge
+            git ls-files -u | awk '{print $4}' | sort -u > conflicts.txt || true
+            
+            if [ -f conflicts.txt ]; then
+              echo "Conflicting files:"
+              cat conflicts.txt
+            fi
+            
+            git merge --abort || true
+          else
+            echo "conflict=false" >> $GITHUB_OUTPUT
+            echo "Merge completed successfully without conflicts"
+          fi
+
+      - name: Push branch and open PR
+        if: steps.merge.outputs.conflict == 'false' && steps.check.outputs.already != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git push -u origin "${{ steps.prep.outputs.branch }}"
+          echo "Pushed branch: ${{ steps.prep.outputs.branch }}"
+
+      - name: Create PR via API
+        if: steps.merge.outputs.conflict == 'false' && steps.check.outputs.already != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const targetRef = '${{ steps.detect.outputs.target_ref }}';
+            const upstreamRepo = process.env.UPSTREAM_REPO;
+            const title = `Upstream sync: ${upstreamRepo} @ ${targetRef}`;
+            
+            const body = [
+              `## Upstream Sync`,
+              ``,
+              `This PR syncs changes from the official upstream repository.`,
+              ``,
+              `- **Upstream Repository**: ${upstreamRepo}`,
+              `- **Target Ref**: ${targetRef}`,
+              `- **Merge Status**: Clean merge (no conflicts)`,
+              ``,
+              `### Release Notes`,
+              `See upstream release notes: https://github.com/${upstreamRepo}/releases/tag/${targetRef}`,
+              ``,
+              `### Workflow`,
+              `This PR was created automatically by the upstream sync workflow.`,
+              `Link to workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+              ``,
+              `### Next Steps`,
+              `1. Review the changes in this PR`,
+              `2. Test the merged code to ensure custom modifications still work`,
+              `3. Merge this PR to complete the sync`,
+              `4. The repo will be automatically tagged as \`synced/${targetRef}\` after merge`,
+              ``,
+              `---`,
+              ``,
+              `Link to Devin run: https://app.devin.ai/sessions/ff7f210c6227486cb0d9e4cd3715332b`,
+              `Requested by: mccoy (hbzgzr@gmail.com) / @mccoysc`
+            ].join('\n');
+            
+            const pr = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              head: "${{ steps.prep.outputs.branch }}",
+              base: "master",
+              body
+            });
+            
+            core.info(`Created PR #${pr.data.number}: ${pr.data.html_url}`);
+
+      - name: Upload conflict list
+        if: steps.merge.outputs.conflict == 'true' && steps.check.outputs.already != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-merge-conflicts-${{ steps.detect.outputs.target_ref }}
+          path: conflicts.txt
+
+      - name: Open conflict issue
+        if: steps.merge.outputs.conflict == 'true' && steps.check.outputs.already != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const targetRef = '${{ steps.detect.outputs.target_ref }}';
+            const upstreamRepo = process.env.UPSTREAM_REPO;
+            const title = `Upstream sync conflict: ${upstreamRepo} @ ${targetRef}`;
+            
+            const body = [
+              `## Upstream Sync Failed - Merge Conflicts`,
+              ``,
+              `Automatic merge from upstream failed due to conflicts.`,
+              ``,
+              `- **Upstream Repository**: ${upstreamRepo}`,
+              `- **Target Ref**: ${targetRef}`,
+              `- **Merge Status**: Conflicts detected`,
+              ``,
+              `### Conflict Details`,
+              `See the uploaded artifact \`upstream-merge-conflicts-${targetRef}\` for the list of conflicting files.`,
+              ``,
+              `### Manual Resolution Required`,
+              `The workflow did not auto-resolve conflicts to avoid overwriting custom changes.`,
+              ``,
+              `To resolve manually:`,
+              `\`\`\`bash`,
+              `# Add upstream remote if not already added`,
+              `git remote add upstream https://github.com/${upstreamRepo}.git`,
+              `git fetch upstream --tags`,
+              ``,
+              `# Create a branch for the merge`,
+              `git checkout -b sync-upstream-${targetRef}`,
+              ``,
+              `# Attempt the merge`,
+              `git merge refs/tags/${targetRef}`,
+              ``,
+              `# Resolve conflicts in the listed files`,
+              `# After resolving, commit and push`,
+              `git add .`,
+              `git commit`,
+              `git push -u origin sync-upstream-${targetRef}`,
+              ``,
+              `# Create a PR for review`,
+              `\`\`\``,
+              ``,
+              `### Release Notes`,
+              `See upstream release notes: https://github.com/${upstreamRepo}/releases/tag/${targetRef}`,
+              ``,
+              `### Workflow`,
+              `Link to workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+              ``,
+              `---`,
+              ``,
+              `Link to Devin run: https://app.devin.ai/sessions/ff7f210c6227486cb0d9e4cd3715332b`,
+              `Requested by: mccoy (hbzgzr@gmail.com) / @mccoysc`
+            ].join('\n');
+            
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['upstream-sync', 'needs-manual-conflict-resolution']
+            });
+            
+            core.info(`Created issue #${issue.data.number}: ${issue.data.html_url}`);
