@@ -1012,6 +1012,8 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
         goto out;
     }
     
+    printf("RA-TLS:   Quote size: %zu bytes, Evidence size: %zu bytes\n", quote_size, evidence_size);
+    
     /* Set MD algorithm */
     mbedtls_x509write_crt_set_md_alg(&ca_writecrt, md_type);
     
@@ -1085,7 +1087,7 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
         goto out;
     }
     
-    /* Write certificate to DER format */
+    /* Write certificate to DER format with dynamic buffer allocation */
     printf("RA-TLS: ========== Writing CA Certificate to DER ==========\n");
     printf("RA-TLS:   Issuer key type: %s\n", get_pk_type_name(mbedtls_pk_get_type(ca_key)));
     mbedtls_pk_type_t issuer_pk_type = mbedtls_pk_get_type(ca_key);
@@ -1105,24 +1107,63 @@ static int generate_ca_certificate(mbedtls_pk_context* ca_key, mbedtls_x509_crt*
     printf("RA-TLS:   Signature MD: %s (type=%d)\n", get_md_name(md_type), md_type);
     printf("RA-TLS: ===================================================\n");
     
-    uint8_t ca_cert_buf[8192];  /* Increased size to accommodate SGX quote extensions */
-    int ca_cert_size = mbedtls_x509write_crt_der(&ca_writecrt, ca_cert_buf, sizeof(ca_cert_buf),
+    /* Dynamic buffer allocation with retry loop for CA certificate DER encoding */
+    uint8_t* ca_cert_buf = NULL;
+    size_t ca_cert_buf_size = 16384;  /* Start with 16KB */
+    const size_t max_buf_size = 131072;  /* Cap at 128KB */
+    int ca_cert_size = 0;
+    
+    while (ca_cert_buf_size <= max_buf_size) {
+        ca_cert_buf = malloc(ca_cert_buf_size);
+        if (!ca_cert_buf) {
+            printf("RA-TLS: Failed to allocate %zu bytes for CA certificate buffer\n", ca_cert_buf_size);
+            ret = MBEDTLS_ERR_X509_ALLOC_FAILED;
+            goto out;
+        }
+        
+        printf("RA-TLS:   Attempting DER write with buffer size: %zu bytes\n", ca_cert_buf_size);
+        ca_cert_size = mbedtls_x509write_crt_der(&ca_writecrt, ca_cert_buf, ca_cert_buf_size,
                                                   mbedtls_ctr_drbg_random, ctr_drbg);
+        
+        if (ca_cert_size >= 0) {
+            /* Success */
+            printf("RA-TLS:   CA certificate DER size: %d bytes (buffer: %zu bytes)\n", 
+                   ca_cert_size, ca_cert_buf_size);
+            break;
+        } else if (ca_cert_size == MBEDTLS_ERR_ASN1_BUF_TOO_SMALL) {
+            /* Buffer too small, retry with larger buffer */
+            printf("RA-TLS:   Buffer too small (%zu bytes), retrying with larger buffer\n", ca_cert_buf_size);
+            free(ca_cert_buf);
+            ca_cert_buf = NULL;
+            ca_cert_buf_size *= 2;  /* Double the buffer size */
+        } else {
+            /* Other error */
+            ret = ca_cert_size;
+            log_mbedtls_error("CA certificate DER write", ret);
+            free(ca_cert_buf);
+            ca_cert_buf = NULL;
+            goto out;
+        }
+    }
+    
     if (ca_cert_size < 0) {
+        printf("RA-TLS: Failed to write CA certificate even with max buffer size (%zu bytes)\n", max_buf_size);
         ret = ca_cert_size;
-        log_mbedtls_error("CA certificate DER write", ret);
         goto out;
     }
     
-    printf("RA-TLS:   CA certificate DER size: %d bytes\n", ca_cert_size);
-    
-    /* Parse the generated certificate */
-    ret = mbedtls_x509_crt_parse_der(ca_crt, ca_cert_buf + sizeof(ca_cert_buf) - ca_cert_size, 
+    /* Parse the generated certificate - note mbedtls writes from end of buffer */
+    ret = mbedtls_x509_crt_parse_der(ca_crt, ca_cert_buf + ca_cert_buf_size - ca_cert_size, 
                                      ca_cert_size);
     if (ret < 0) {
         log_mbedtls_error("CA certificate parse", ret);
+        free(ca_cert_buf);
+        ca_cert_buf = NULL;
         goto out;
     }
+    
+    free(ca_cert_buf);
+    ca_cert_buf = NULL;
     
     printf("RA-TLS: CA certificate generated successfully (with SGX quote)\n");
     
