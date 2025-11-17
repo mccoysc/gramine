@@ -2,8 +2,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* POSIX string functions (strcasecmp) */
 #include <strings.h>
+
+/* Dynamic linking API (dlsym, dlopen, dlclose, dladdr, dlerror) */
 #include <dlfcn.h>
+
+/* File status and permissions (chmod) */
 #include <sys/stat.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -11,6 +16,7 @@
 #include <link.h>
 
 /* Include TLS library headers for type definitions only - no linking */
+#define HAVE_MBEDTLS_HEADERS 1
 #ifdef HAVE_MBEDTLS_HEADERS
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509.h>
@@ -59,14 +65,6 @@ static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
 static verify_measurements_cb_t g_user_measurements_cb = NULL;
 static pthread_mutex_t g_user_measurements_cb_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* mbedTLS library handles - for detection/logging only */
-static void *g_mbedtls_lib = NULL;
-static void *g_mbedx509_lib = NULL;
-
-/* OpenSSL library handles - for detection/logging only */
-static void *g_libssl = NULL;
-static void *g_libcrypto = NULL;
-
 /* OpenSSL helper functions - resolved lazily in callbacks */
 static int (*openssl_i2d_X509)(X509 *cert, unsigned char **out) = NULL;
 static X509 *(*openssl_X509_STORE_CTX_get0_cert)(X509_STORE_CTX *ctx) = NULL;
@@ -75,9 +73,6 @@ static int (*openssl_SSL_get_ex_data_X509_STORE_CTX_idx)(void) = NULL;
 static void *(*openssl_X509_STORE_CTX_get_ex_data)(X509_STORE_CTX *ctx, int idx) = NULL;
 static void *(*openssl_SSL_get_SSL_CTX)(void *ssl) = NULL;
 static int (*openssl_X509_STORE_CTX_get_error_depth)(X509_STORE_CTX *ctx) = NULL;
-
-/* wolfSSL library handle - for detection/logging only */
-static void *g_wolfssl_lib = NULL;
 
 /* wolfSSL helper functions - resolved lazily in callbacks */
 static void *(*wolfssl_X509_STORE_CTX_get_current_cert)(void *ctx) = NULL;
@@ -163,11 +158,9 @@ static pthread_mutex_t g_handle_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int register_handle(void *handle, const char *path);
 static handle_registry_entry_t *decrement_handle_refcount_locked(void *handle);
 static void remove_handle_locked(void *handle);
-static const char *get_handle_path_locked(void *handle);
 
 /* Initialization flags */
 static pthread_once_t g_init_once = PTHREAD_ONCE_INIT;
-static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_ratls_verify_initialized = 0;
 
 /* Reentrancy guard to prevent storing our own callbacks as user callbacks */
@@ -3228,23 +3221,6 @@ static void remove_handle_locked(void *handle)
             return;
         }
     }
-}
-
-/**
- * Get path for a handle from registry
- * Returns path string or NULL if not found
- * Caller must hold g_handle_registry_mutex
- */
-static const char *get_handle_path_locked(void *handle)
-{
-    for (size_t i = 0; i < g_handle_count; i++)
-    {
-        if (g_handle_registry[i].handle == handle)
-        {
-            return g_handle_registry[i].path[0] ? g_handle_registry[i].path : NULL;
-        }
-    }
-    return NULL;
 }
 
 /**
