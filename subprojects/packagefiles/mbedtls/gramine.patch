@@ -1,6 +1,13 @@
 # A similar fix will be merged to a future version of mbedTLS, please track
 # progress via issue https://github.com/ARMmbed/mbedtls/issues/3141.
 
+diff --git a/include/mbedtls/mbedtls_config.h b/include/mbedtls/mbedtls_config.h
+--- a/include/mbedtls/mbedtls_config.h
++++ b/include/mbedtls/mbedtls_config.h
+@@ -2190 +2190 @@
+-//#define MBEDTLS_USE_PSA_CRYPTO
++#define MBEDTLS_USE_PSA_CRYPTO
+
 diff --git a/library/ssl_tls.c b/library/ssl_tls.c
 index 3633cd40f9e4dbd56b74777d328b56259d2ede14..7e5b6bbe139af51d9ac1938e0e4aaad44c34a996 100644
 --- a/library/ssl_tls.c

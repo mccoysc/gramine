@@ -22,7 +22,7 @@ fi
 rm -rf "$PRIVATE_DIR"
 
 cp -ar "$VENDOR_SOURCE_DIR" "$PRIVATE_DIR"
-cp "$CURRENT_SOURCE_DIR"/include/mbedtls/*.h "$PRIVATE_DIR"/include/mbedtls/
+cp "$CURRENT_SOURCE_DIR"/include/mbedtls/*.h "$PRIVATE_DIR"/include/mbedtls/ 2>/dev/null || true
 patch -p1 --directory "$PRIVATE_DIR" <"$CURRENT_SOURCE_DIR"/gramine.patch
 
 make -C "$PRIVATE_DIR" lib "$@"
