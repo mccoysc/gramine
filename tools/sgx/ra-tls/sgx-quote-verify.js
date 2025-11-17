@@ -268,7 +268,7 @@ async function verifyQuote(input, options = {}) {
         tcbLevel: { verified: false, error: null, status: null },
         measurementPolicy: { verified: false, error: null }
     };
-    verified=true;
+    let verified=true;
 
     let quoteData = null;
     let collateral = null;
