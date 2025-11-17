@@ -523,6 +523,12 @@ static int generate_x509(mbedtls_pk_context* pk, const uint8_t* quote, size_t qu
             if (grp_id == MBEDTLS_ECP_DP_SECP256R1) curve_name = "P-256";
             else if (grp_id == MBEDTLS_ECP_DP_SECP384R1) curve_name = "P-384";
             else if (grp_id == MBEDTLS_ECP_DP_SECP521R1) curve_name = "P-521";
+            else if (grp_id == MBEDTLS_ECP_DP_SECP256K1) curve_name = "secp256k1";
+            else if (grp_id == MBEDTLS_ECP_DP_SECP192R1) curve_name = "P-192";
+            else if (grp_id == MBEDTLS_ECP_DP_SECP192K1) curve_name = "secp192k1";
+            else if (grp_id == MBEDTLS_ECP_DP_BP256R1)   curve_name = "brainpoolP256r1";
+            else if (grp_id == MBEDTLS_ECP_DP_BP384R1)   curve_name = "brainpoolP384r1";
+            else if (grp_id == MBEDTLS_ECP_DP_BP512R1)   curve_name = "brainpoolP512r1";
             printf("RA-TLS:   Subject key curve: %s\n", curve_name);
         }
     }
