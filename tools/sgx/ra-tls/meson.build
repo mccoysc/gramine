@@ -40,6 +40,7 @@ libra_tls_verify = static_library('ra_tls_verify',
     'ra_tls_verify_common.c',
 
     include_directories: pal_sgx_inc,
+    c_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
     dependencies: [
         libcbor_dep,
         mbedtls_static_dep,
@@ -85,6 +86,7 @@ libsecret_prov_verify = static_library('secret_prov_verify',
     'secret_prov_verify.c',
     'secret_prov_common.c',
 
+    c_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
     dependencies: [
         libcbor_dep,
         libra_tls_verify_dep,
@@ -110,6 +112,7 @@ if sgx_dcap_quoteverify_dep.found()
         'ra_tls_verify_dcap.c',
 
         link_args: ra_tls_link_args,
+        c_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
         dependencies: [
             libcbor_dep,
             libra_tls_verify_dep.as_link_whole(),
@@ -131,6 +134,7 @@ if sgx_dcap_quoteverify_dep.found()
         'ra_tls_verify_dcap_gramine.c',
 
         link_args: ra_tls_link_args,
+        c_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
         dependencies: [
             libcbor_dep,
             libra_tls_verify_dep.as_link_whole(),
@@ -152,6 +156,7 @@ if sgx_dcap_quoteverify_dep.found()
 
         link_args: secret_prov_link_args,
         include_directories: pal_sgx_inc,
+        c_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
         dependencies: [
             libcbor_dep,
             libsecret_prov_verify_dep.as_link_whole(),
@@ -175,6 +180,7 @@ if sgx_dcap_quoteverify_dep.found()
         link_args: ['-ldl'],
         link_with: [libra_tls_attest, libra_tls_verify_dcap_gramine],
         include_directories: [pal_sgx_inc, include_directories('.')],
+        c_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
         dependencies: [
             mbedtls_static_dep,
             sgx_dcap_quoteverify_dep,

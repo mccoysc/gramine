@@ -16,6 +16,7 @@
 
 #include <cbor.h>
 
+#include <mbedtls/build_info.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/sha512.h>
@@ -193,7 +194,7 @@ int find_oid_in_cert_extensions(const uint8_t* exts, size_t exts_size, const uin
 static int fill_crt_pk_der(mbedtls_x509_crt* crt, uint8_t* pk_der, size_t* inout_pk_der_size) {
     mbedtls_pk_type_t pk_type = mbedtls_pk_get_type(&crt->pk);
     
-    /* Support both EC and RSA keys */
+    /* Support EC, RSA, and OPAQUE (ED25519) keys */
     if (pk_type == MBEDTLS_PK_ECKEY) {
         mbedtls_ecp_keypair* key = mbedtls_pk_ec(crt->pk);
         if (key == NULL) {
@@ -202,12 +203,28 @@ static int fill_crt_pk_der(mbedtls_x509_crt* crt, uint8_t* pk_der, size_t* inout
         /* Accept all EC curves - no need to restrict to specific curves */
     } else if (pk_type == MBEDTLS_PK_RSA) {
         /* RSA keys are supported */
+    } else if (pk_type == MBEDTLS_PK_OPAQUE) {
+        /* OPAQUE keys (ED25519) are supported */
     } else {
         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
     }
 
-    /* below function writes data at the end of the buffer */
+    /* Try to export public key using mbedtls_pk_write_pubkey_der */
     int pk_der_size_int = mbedtls_pk_write_pubkey_der(&crt->pk, pk_der, *inout_pk_der_size);
+    
+    /* If export fails (e.g., for OPAQUE keys), use certificate's pk_raw (SPKI) as fallback */
+    if (pk_der_size_int == MBEDTLS_ERR_PK_FEATURE_UNAVAILABLE ||
+        pk_der_size_int == MBEDTLS_ERR_PK_TYPE_MISMATCH ||
+        (pk_der_size_int < 0 && pk_type == MBEDTLS_PK_OPAQUE)) {
+        /* Use the certificate's pk_raw field which contains the full SubjectPublicKeyInfo DER */
+        if (crt->pk_raw.len > *inout_pk_der_size) {
+            return MBEDTLS_ERR_PK_BUFFER_TOO_SMALL;
+        }
+        memcpy(pk_der, crt->pk_raw.p, crt->pk_raw.len);
+        *inout_pk_der_size = crt->pk_raw.len;
+        return 0;
+    }
+    
     if (pk_der_size_int < 0)
         return pk_der_size_int;
 
