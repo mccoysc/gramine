@@ -22,6 +22,7 @@ libra_tls_attest = shared_library('ra_tls_attest',
     'ra_tls_attest.c',
     link_args: ra_tls_link_args,
     include_directories: [pal_sgx_inc, include_directories('.')], # this is only for `sgx_arch.h` and `sgx_attest.h`, and jsmn
+    c_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
     dependencies: [
         libcbor_dep,
         mbedtls_static_dep,
@@ -65,6 +66,7 @@ libsecret_prov_attest = shared_library('secret_prov_attest',
 
     link_args: secret_prov_link_args,
     include_directories: [pal_sgx_inc, include_directories('.')],
+    c_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
     dependencies: [
         libcbor_dep,
         mbedtls_static_dep,

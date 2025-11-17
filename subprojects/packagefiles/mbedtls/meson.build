@@ -121,6 +121,7 @@ mbedtls_inc = include_directories('include', 'mbedtls-3.6.3/include')
 mbedtls_static_dep = declare_dependency(
     link_with: [mbedtls_libs[6], mbedtls_libs[7], mbedtls_libs[8]],
     include_directories: mbedtls_inc,
+    compile_args: '-DMBEDTLS_CONFIG_FILE="mbedtls/config-gramine.h"',
 )
 mbedtls_pal_dep = declare_dependency(
     # HACK: Apparently Meson considers the `mbedtls_pal_libs` to be "not linkable", because it has

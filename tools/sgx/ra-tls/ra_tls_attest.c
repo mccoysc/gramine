@@ -24,6 +24,7 @@
 
 #include <cbor.h>
 
+#include <mbedtls/build_info.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecp.h>
@@ -2240,8 +2241,13 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
     ret = 0;
 out_json:
     /* Clean up allocated paths */
-    free(ca_key_file_path);
-    free(ca_cert_file_path);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+    if (ca_key_file_path)
+        free(ca_key_file_path);
+    if (ca_cert_file_path)
+        free(ca_cert_file_path);
+#pragma GCC diagnostic pop
     
     if (use_json) {
         free_cert_config(&json_config);
