@@ -35,6 +35,7 @@
 #include <mbedtls/rsa.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/x509_crt.h>
+#include <psa/crypto.h>
 
 #define JSMN_STATIC
 #include "third_party/jsmn/jsmn.h"
@@ -49,6 +50,7 @@ typedef struct {
     union {
         mbedtls_ecp_group_id ecp_group_id;
         unsigned int rsa_key_size;
+        int ed25519_marker;  /* For ED25519, just a marker */
     } params;
 } algorithm_config_t;
 
@@ -68,6 +70,8 @@ static const algorithm_config_t g_supported_algorithms[] = {
     { "rsa2048", MBEDTLS_PK_RSA, { .rsa_key_size = 2048 } },
     { "rsa3072", MBEDTLS_PK_RSA, { .rsa_key_size = 3072 } },
     { "rsa4096", MBEDTLS_PK_RSA, { .rsa_key_size = 4096 } },
+    /* ED25519 (Edwards curve) */
+    { "ed25519", MBEDTLS_PK_OPAQUE, { .ed25519_marker = 1 } },
 };
 
 #define DEFAULT_ALGORITHM_NAME "secp384r1"
@@ -257,6 +261,7 @@ static const char* get_pk_type_name(mbedtls_pk_type_t pk_type) {
     switch (pk_type) {
         case MBEDTLS_PK_ECKEY: return "EC";
         case MBEDTLS_PK_RSA: return "RSA";
+        case MBEDTLS_PK_OPAQUE: return "OPAQUE";
         default: return "UNKNOWN";
     }
 }
@@ -454,7 +459,10 @@ static mbedtls_md_type_t get_recommended_md_for_key(mbedtls_pk_context* key) {
     
     mbedtls_pk_type_t pk_type = mbedtls_pk_get_type(key);
     
-    if (pk_type == MBEDTLS_PK_ECKEY || pk_type == MBEDTLS_PK_ECDSA) {
+    if (pk_type == MBEDTLS_PK_OPAQUE) {
+        /* For ED25519 (opaque PSA key), use NONE as it uses PureEdDSA (no separate hash) */
+        return MBEDTLS_MD_NONE;
+    } else if (pk_type == MBEDTLS_PK_ECKEY || pk_type == MBEDTLS_PK_ECDSA) {
         /* For EC keys, match hash size to curve size */
         mbedtls_ecp_keypair* ec = mbedtls_pk_ec(*key);
         if (ec) {
@@ -1448,6 +1456,44 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                 log_mbedtls_error("RSA key generation", ret);
                 goto out_json;
             }
+        } else if (algo_config->pk_type == MBEDTLS_PK_OPAQUE) {
+            printf("RA-TLS:   Generating ED25519 key using PSA Crypto API...\n");
+            
+            /* Initialize PSA Crypto */
+            psa_status_t psa_status = psa_crypto_init();
+            if (psa_status != PSA_SUCCESS) {
+                printf("RA-TLS: ERROR: PSA crypto init failed: %d\n", psa_status);
+                ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                goto out_json;
+            }
+            
+            /* Set up key attributes for ED25519 */
+            psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+            psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_TWISTED_EDWARDS));
+            psa_set_key_bits(&attributes, 255);  /* ED25519 uses 255-bit keys */
+            psa_set_key_algorithm(&attributes, PSA_ALG_PURE_EDDSA);
+            psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE | PSA_KEY_USAGE_VERIFY_MESSAGE | PSA_KEY_USAGE_EXPORT);
+            
+            /* Generate the key */
+            mbedtls_svc_key_id_t key_id;
+            psa_status = psa_generate_key(&attributes, &key_id);
+            psa_reset_key_attributes(&attributes);
+            
+            if (psa_status != PSA_SUCCESS) {
+                printf("RA-TLS: ERROR: PSA key generation failed: %d\n", psa_status);
+                ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                goto out_json;
+            }
+            
+            /* Setup the PK context to use the PSA key */
+            ret = mbedtls_pk_setup_opaque(key, key_id);
+            if (ret < 0) {
+                log_mbedtls_error("PK setup opaque for ED25519", ret);
+                psa_destroy_key(key_id);
+                goto out_json;
+            }
+            
+            printf("RA-TLS:   ED25519 key generated successfully (PSA key ID: %lu)\n", (unsigned long)key_id);
         } else {
             printf("RA-TLS: ERROR: Unsupported key type\n");
             ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
@@ -1783,6 +1829,57 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                             ca_crt_heap = NULL;
                             goto out_json;
                         }
+                    } else if (user_pk_type == MBEDTLS_PK_OPAQUE) {
+                        /* Generate ED25519 CA key using PSA Crypto API */
+                        printf("RA-TLS:   Generating CA ED25519 key using PSA Crypto API...\n");
+                        
+                        /* Initialize PSA Crypto */
+                        psa_status_t psa_status = psa_crypto_init();
+                        if (psa_status != PSA_SUCCESS) {
+                            printf("RA-TLS: ERROR: PSA crypto init failed: %d\n", psa_status);
+                            ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                        
+                        /* Set up key attributes for ED25519 */
+                        psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+                        psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_TWISTED_EDWARDS));
+                        psa_set_key_bits(&attributes, 255);  /* ED25519 uses 255-bit keys */
+                        psa_set_key_algorithm(&attributes, PSA_ALG_PURE_EDDSA);
+                        psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE | PSA_KEY_USAGE_VERIFY_MESSAGE | PSA_KEY_USAGE_EXPORT);
+                        
+                        /* Generate the key */
+                        mbedtls_svc_key_id_t ca_key_id;
+                        psa_status = psa_generate_key(&attributes, &ca_key_id);
+                        psa_reset_key_attributes(&attributes);
+                        
+                        if (psa_status != PSA_SUCCESS) {
+                            printf("RA-TLS: ERROR: PSA CA key generation failed: %d\n", psa_status);
+                            ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                        
+                        /* Setup the PK context to use the PSA key */
+                        ret = mbedtls_pk_setup_opaque(&ca_key_ctx, ca_key_id);
+                        if (ret < 0) {
+                            log_mbedtls_error("CA PK setup opaque for ED25519", ret);
+                            psa_destroy_key(ca_key_id);
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                        
+                        printf("RA-TLS:   CA ED25519 key generated successfully (PSA key ID: %lu)\n", (unsigned long)ca_key_id);
                     } else {
                         printf("RA-TLS: ERROR: Unsupported user key type for CA key generation\n");
                         ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
@@ -1831,6 +1928,57 @@ static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, ui
                             ca_crt_heap = NULL;
                             goto out_json;
                         }
+                    } else if (ca_algo_config->pk_type == MBEDTLS_PK_OPAQUE) {
+                        /* Generate ED25519 CA key using PSA Crypto API */
+                        printf("RA-TLS:   Generating CA ED25519 key using PSA Crypto API...\n");
+                        
+                        /* Initialize PSA Crypto */
+                        psa_status_t psa_status = psa_crypto_init();
+                        if (psa_status != PSA_SUCCESS) {
+                            printf("RA-TLS: ERROR: PSA crypto init failed: %d\n", psa_status);
+                            ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                        
+                        /* Set up key attributes for ED25519 */
+                        psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+                        psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_TWISTED_EDWARDS));
+                        psa_set_key_bits(&attributes, 255);  /* ED25519 uses 255-bit keys */
+                        psa_set_key_algorithm(&attributes, PSA_ALG_PURE_EDDSA);
+                        psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE | PSA_KEY_USAGE_VERIFY_MESSAGE | PSA_KEY_USAGE_EXPORT);
+                        
+                        /* Generate the key */
+                        mbedtls_svc_key_id_t ca_key_id;
+                        psa_status = psa_generate_key(&attributes, &ca_key_id);
+                        psa_reset_key_attributes(&attributes);
+                        
+                        if (psa_status != PSA_SUCCESS) {
+                            printf("RA-TLS: ERROR: PSA CA key generation failed: %d\n", psa_status);
+                            ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                        
+                        /* Setup the PK context to use the PSA key */
+                        ret = mbedtls_pk_setup_opaque(&ca_key_ctx, ca_key_id);
+                        if (ret < 0) {
+                            log_mbedtls_error("CA PK setup opaque for ED25519", ret);
+                            psa_destroy_key(ca_key_id);
+                            mbedtls_pk_free(&ca_key_ctx);
+                            mbedtls_x509_crt_free(ca_crt_heap);
+                            free(ca_crt_heap);
+                            ca_crt_heap = NULL;
+                            goto out_json;
+                        }
+                        
+                        printf("RA-TLS:   CA ED25519 key generated successfully (PSA key ID: %lu)\n", (unsigned long)ca_key_id);
                     } else {
                         printf("RA-TLS: ERROR: Unsupported CA algorithm type\n");
                         ret = MBEDTLS_ERR_PK_BAD_INPUT_DATA;
