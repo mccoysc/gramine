@@ -114,27 +114,27 @@ jobs:
             echo "Prebuilt libraries have changed"
           fi
           
-      - name: Commit and push prebuilt libraries
-        if: steps.check_changes.outputs.changed == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/master'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "Auto-compile: Update prebuilt RA-TLS libraries" \
-                     -m "Automatically compiled and updated prebuilt libraries after source code changes." \
-                     -m "Link to workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          git push origin master
+      #- name: Commit and push prebuilt libraries
+      #  if: steps.check_changes.outputs.changed == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+      #  run: |
+      #    git config user.name "github-actions[bot]"
+      #    git config user.email "github-actions[bot]@users.noreply.github.com"
+      #    git commit -m "Auto-compile: Update prebuilt RA-TLS libraries" \
+      #               -m "Automatically compiled and updated prebuilt libraries after source code changes." \
+      #               -m "Link to workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      #    git push origin master
           
-      - name: Upload prebuilt artifacts (PR only)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ratls-prebuilt-libs
-          path: |
-            build/tools/sgx/ra-tls/libra_tls_attest.so
-            build/tools/sgx/ra-tls/libra_tls_verify.a
-            build/tools/sgx/ra-tls/libra_tls_verify_dcap.so
-            build/tools/sgx/ra-tls/libra_tls_verify_dcap_gramine.so
-            build/tools/sgx/ra-tls/libratls-quote-verify.so
-            build/tools/sgx/ra-tls/libsecret_prov_attest.so
-            build/tools/sgx/ra-tls/libsecret_prov_verify.a
-            build/tools/sgx/ra-tls/libsecret_prov_verify_dcap.so
+      #- name: Upload prebuilt artifacts (PR only)
+      #  if: github.event_name == 'pull_request'
+      #  uses: actions/upload-artifact@v4
+      #  with:
+      #    name: ratls-prebuilt-libs
+      #    path: |
+      #      build/tools/sgx/ra-tls/libra_tls_attest.so
+      #      build/tools/sgx/ra-tls/libra_tls_verify.a
+      #      build/tools/sgx/ra-tls/libra_tls_verify_dcap.so
+      #      build/tools/sgx/ra-tls/libra_tls_verify_dcap_gramine.so
+      #      build/tools/sgx/ra-tls/libratls-quote-verify.so
+      #      build/tools/sgx/ra-tls/libsecret_prov_attest.so
+      #      build/tools/sgx/ra-tls/libsecret_prov_verify.a
+      #      build/tools/sgx/ra-tls/libsecret_prov_verify_dcap.so
