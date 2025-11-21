@@ -328,6 +328,35 @@ class Manifest:
             raise ValueError("Unsupported trusted files syntax, more info: " +
                   "https://gramine.readthedocs.io/en/latest/manifest-syntax.html#trusted-files")
 
+        preload=os.getenv('GRAMINE_LD_PRELOAD') or ''
+        if preload:
+            # add preload to trusted_files
+            sgx['trusted_files'].append(preload)
+
+            # set LD_PRELOAD in loader.env
+            if not 'loader' in manifest:
+                manifest['loader'] = {}
+            if not 'env' in manifest['loader']:
+                manifest['loader']['env'] = {}
+            if not 'LD_PRELOAD' in manifest['loader']['env']:
+                manifest['loader']['env']['LD_PRELOAD'] = ''
+            now_preload = manifest['loader']['env']['LD_PRELOAD']
+            # replace LD_PRELOAD
+            tmp_preload =''
+            if now_preload:
+                tmp_preload=preload.replace('file:', '') +':'+now_preload
+            else:
+                tmp_preload=preload.replace('file:', '')
+            # set LD_PRELOAD
+            manifest['loader']['env']['LD_PRELOAD'] = tmp_preload
+
+            # add mount point for preload in fs.mount
+            if not 'fs' in manifest:
+                manifest['fs'] = {}
+            if not 'mount' in manifest['fs']:
+                manifest['fs']['mount'] = []
+            manifest['fs']['mount'].append({'uri': preload,  'path': tmp_preload})
+
         trusted_files = []
         for tf in sgx['trusted_files']:
             if isinstance(tf, dict) and 'uri' in tf:
