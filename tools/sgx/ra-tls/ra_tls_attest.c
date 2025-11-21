@@ -656,17 +656,6 @@ static int sha256_over_pk(mbedtls_pk_context* pk, uint8_t* sha) {
 /*! generate SGX quote with user_report_data equal to SHA256 hash over \p pk (legacy format) */
 static int generate_quote_with_pk_hash(mbedtls_pk_context* pk, uint8_t** out_quote,
                                        size_t* out_quote_size) {
-    /* Check if running in SGX environment by testing access to /dev/attestation/quote */
-    int test_fd = open("/dev/attestation/quote", O_RDONLY);
-    if (test_fd < 0) {
-        /* Not running in SGX environment - skip quote embedding and return success */
-        printf("RA-TLS: Not running in SGX environment (cannot access /dev/attestation/quote), skipping quote embedding\n");
-        *out_quote = NULL;
-        *out_quote_size = 0;
-        return 0;
-    }
-    close(test_fd);
-
     sgx_report_data_t user_report_data = {0};
     int ret = sha256_over_pk(pk, user_report_data.d);
     if (ret < 0)
@@ -831,17 +820,6 @@ static int generate_quote_with_claims_hash(uint8_t* claims, size_t claims_size,
                                            uint8_t** out_quote_buf, size_t* out_quote_buf_size) {
     int ret;
     uint8_t* quote = NULL;
-
-    /* Check if running in SGX environment by testing access to /dev/attestation/quote */
-    int test_fd = open("/dev/attestation/quote", O_RDONLY);
-    if (test_fd < 0) {
-        /* Not running in SGX environment - skip quote embedding and return success */
-        printf("RA-TLS: Not running in SGX environment (cannot access /dev/attestation/quote), skipping quote embedding\n");
-        *out_quote_buf = NULL;
-        *out_quote_buf_size = 0;
-        return 0;
-    }
-    close(test_fd);
 
     sgx_report_data_t user_report_data = {0};
     ret = mbedtls_sha256(claims, claims_size, user_report_data.d, /*is224=*/0);
