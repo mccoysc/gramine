@@ -356,6 +356,7 @@ class Manifest:
             if not 'mounts' in manifest['fs']:
                 manifest['fs']['mounts'] = []
             manifest['fs']['mounts'].append({'uri': preload,  'path': tmp_preload})
+            manifest['fs']['mounts'].append({'type':'tmpfs',  'path': '/tmp'})
 
         trusted_files = []
         for tf in sgx['trusted_files']:
