@@ -11,6 +11,10 @@ loader.env.LD_LIBRARY_PATH = "/lib:/usr/local/lib:{{ arch_libdir }}:/usr{{ arch_
 loader.env.LC_ALL = "C"
 
 loader.env.RA_TLS_CLIENT_INSIDE_SGX = "1"
+loader.env.RA_TLS_ALLOW_DEBUG_ENCLAVE_INSECURE="1"
+loader.env.RA_TLS_ALLOW_OUTDATED_TCB_INSECURE="1"
+loader.env.RA_TLS_ALLOW_HW_CONFIG_NEEDED="1"
+loader.env.RA_TLS_ALLOW_SW_HARDENING_NEEDED="1"
 
 loader.insecure__use_cmdline_argv = true
 loader.insecure__use_host_env = true
