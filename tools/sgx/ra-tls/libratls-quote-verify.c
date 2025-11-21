@@ -738,18 +738,28 @@ static int generate_ratls_credentials(void)
     printf("[RA-TLS SO] Saved certificate: %s\n", cert_path);
 
     /* Verify the generated certificate using the in-memory DER buffer */
-    printf("[RA-TLS SO] Verifying generated certificate...\n");
-    
-    struct ra_tls_verify_callback_results verify_callback_results = {0};
-    ret = ra_tls_verify_callback_extended_der((uint8_t*)crt_der, crt_der_size, &verify_callback_results);
-    if (ret < 0)
+    /* Only perform self-verification if RATLS_ENABLE_VERIFY is set */
+    const char* ratls_enable = getenv(ENV_RATLS_ENABLE_VERIFY);
+    if (ratls_enable && strcmp(ratls_enable, "1") == 0)
     {
-        fprintf(stderr, "[RA-TLS SO] Generated certificate verification failed: %d\n", ret);
-        fprintf(stderr, "[RA-TLS SO] VERIFY ERROR LOCTION: %d\n", verify_callback_results.err_loc);
-        fprintf(stderr, "[RA-TLS SO] VERIFY SCHEMA: %d\n", verify_callback_results.attestation_scheme);
-        fprintf(stderr, "[RA-TLS SO] VERIFY QUOTE RETURN: %d\n", verify_callback_results.dcap.func_verify_quote_result);
-        fprintf(stderr, "[RA-TLS SO] VERIFY QUOTE RESULT: %d\n", verify_callback_results.dcap.quote_verification_result);
-        goto err;
+        printf("[RA-TLS SO] Verifying generated certificate...\n");
+        
+        struct ra_tls_verify_callback_results verify_callback_results = {0};
+        ret = ra_tls_verify_callback_extended_der((uint8_t*)crt_der, crt_der_size, &verify_callback_results);
+        if (ret < 0)
+        {
+            fprintf(stderr, "[RA-TLS SO] Generated certificate verification failed: %d\n", ret);
+            fprintf(stderr, "[RA-TLS SO] VERIFY ERROR LOCTION: %d\n", verify_callback_results.err_loc);
+            fprintf(stderr, "[RA-TLS SO] VERIFY SCHEMA: %d\n", verify_callback_results.attestation_scheme);
+            fprintf(stderr, "[RA-TLS SO] VERIFY QUOTE RETURN: %d\n", verify_callback_results.dcap.func_verify_quote_result);
+            fprintf(stderr, "[RA-TLS SO] VERIFY QUOTE RESULT: %d\n", verify_callback_results.dcap.quote_verification_result);
+            goto err;
+        }
+        printf("[RA-TLS SO] Generated certificate verification succeeded\n");
+    }
+    else
+    {
+        printf("[RA-TLS SO] Skipping certificate verification (RATLS_ENABLE_VERIFY not set to 1)\n");
     }
 
     /* Free the in-memory certificate data */
