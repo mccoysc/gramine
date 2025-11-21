@@ -353,9 +353,9 @@ class Manifest:
             # add mount point for preload in fs.mount
             if not 'fs' in manifest:
                 manifest['fs'] = {}
-            if not 'mount' in manifest['fs']:
-                manifest['fs']['mount'] = []
-            manifest['fs']['mount'].append({'uri': preload,  'path': tmp_preload})
+            if not 'mounts' in manifest['fs']:
+                manifest['fs']['mounts'] = []
+            manifest['fs']['mounts'].append({'uri': preload,  'path': tmp_preload})
 
         trusted_files = []
         for tf in sgx['trusted_files']:
