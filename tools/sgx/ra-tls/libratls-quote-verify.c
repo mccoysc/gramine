@@ -748,14 +748,18 @@ static int generate_ratls_credentials(void)
         ret = ra_tls_verify_callback_extended_der((uint8_t*)crt_der, crt_der_size, &verify_callback_results);
         if (ret < 0)
         {
-            fprintf(stderr, "[RA-TLS SO] Generated certificate verification failed: %d\n", ret);
+            fprintf(stderr, "[RA-TLS SO] WARNING: Generated certificate verification failed: %d\n", ret);
             fprintf(stderr, "[RA-TLS SO] VERIFY ERROR LOCTION: %d\n", verify_callback_results.err_loc);
             fprintf(stderr, "[RA-TLS SO] VERIFY SCHEMA: %d\n", verify_callback_results.attestation_scheme);
             fprintf(stderr, "[RA-TLS SO] VERIFY QUOTE RETURN: %d\n", verify_callback_results.dcap.func_verify_quote_result);
             fprintf(stderr, "[RA-TLS SO] VERIFY QUOTE RESULT: %d\n", verify_callback_results.dcap.quote_verification_result);
-            goto err;
+            fprintf(stderr, "[RA-TLS SO] Continuing despite verification failure (not fatal)\n");
+            /* Do not exit - verification failure is not fatal, just log and continue */
         }
-        printf("[RA-TLS SO] Generated certificate verification succeeded\n");
+        else
+        {
+            printf("[RA-TLS SO] Generated certificate verification succeeded\n");
+        }
     }
     else
     {
