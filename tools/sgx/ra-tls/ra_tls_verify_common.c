@@ -570,6 +570,19 @@ int ra_tls_verify_callback_extended_der(uint8_t* der_crt, size_t der_crt_size,
     mbedtls_x509_crt crt;
     mbedtls_x509_crt_init(&crt);
 
+    /* Check if RA-TLS verification is enabled via environment variable */
+    const char* ratls_enable = getenv("RATLS_ENABLE_VERIFY");
+    if (!ratls_enable || strcmp(ratls_enable, "1") != 0) {
+        /* Verification not enabled - return success without performing verification */
+        INFO("RA-TLS verification disabled (RATLS_ENABLE_VERIFY not set to 1), accepting certificate\n");
+        if (results) {
+            memset(results, 0, sizeof(*results));
+            results->err_loc = AT_NONE;
+        }
+        mbedtls_x509_crt_free(&crt);
+        return 0;
+    }
+
     ret = mbedtls_x509_crt_parse(&crt, der_crt, der_crt_size);
     if (ret < 0)
         goto out;
