@@ -20,7 +20,7 @@ permissions:
 
 concurrency:
   group: auto-compile-ratls-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   compile-and-commit:
