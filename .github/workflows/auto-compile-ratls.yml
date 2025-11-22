@@ -18,6 +18,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: auto-compile-ratls-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   compile-and-commit:
     runs-on: ubuntu-22.04
@@ -114,8 +118,26 @@ jobs:
             echo "Prebuilt libraries have changed"
           fi
           
-      - name: Commit and push prebuilt libraries
+      - name: Check branch is up to date
+        id: up_to_date
         if: steps.check_changes.outputs.changed == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          set -e
+          git fetch origin master
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse origin/master)
+          echo "Local HEAD:  $LOCAL"
+          echo "Remote HEAD: $REMOTE"
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "Branch is up-to-date with origin/master"
+          else
+            echo "up_to_date=false" >> $GITHUB_OUTPUT
+            echo "Remote master advanced; skipping commit from outdated workflow run"
+          fi
+          
+      - name: Commit and push prebuilt libraries
+        if: steps.check_changes.outputs.changed == 'true' && steps.up_to_date.outputs.up_to_date == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
