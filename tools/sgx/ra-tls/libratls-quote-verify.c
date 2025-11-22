@@ -1220,7 +1220,7 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         g_platform_instance_id[32] = '\0';
         g_platform_instance_id_valid = 1;
         
-        printf("[RA-TLS SO] Platform instance ID (PPID): %s\n", g_platform_instance_id);
+        printf("[RA-TLS SO] (thread %d)Platform instance ID (PPID): %s\n",pthread_self(), g_platform_instance_id);
         
     } else if (data_type == 5) {
         /* PCK certificate chain - extract SPKI fingerprint from leaf certificate */
@@ -1292,7 +1292,7 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         g_platform_instance_id[64] = '\0';
         g_platform_instance_id_valid = 1;
         
-        printf("[RA-TLS SO] Extracted platform instance ID from PCK SPKI: %s\n", g_platform_instance_id);
+        printf("[RA-TLS SO] (thred %d)Extracted platform instance ID from PCK SPKI: %s\n",pthread_self(),g_platform_instance_id);
         
         mbedtls_x509_crt_free(&pck_cert);
 #else
@@ -1399,7 +1399,11 @@ static int verify_measurements_callback(const char *mrenclave, const char *mrsig
     uint16_t svn = *(const uint16_t*)isv_svn;
     printf("[RA-TLS SO]   ISV_PROD_ID: %u (0x%04x)\n", prod_id, prod_id);
     printf("[RA-TLS SO]   ISV_SVN:     %u (0x%04x)\n", svn, svn);
-    printf("[RA-TLS SO]   Platform instance ID: %s\n", g_platform_instance_id);
+    if(g_platform_instance_id_valid){
+        printf("[RA-TLS SO]   Platform instance ID: %s\n", g_platform_instance_id);
+    }else{
+        printf("[RA-TLS SO]   (thread %d)Platform instance ID: <not available>\n",pthread_self());
+    }
 
     /* First, call user's callback if set */
     pthread_mutex_lock(&g_user_measurements_cb_mutex);
