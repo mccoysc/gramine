@@ -992,6 +992,7 @@ static int extract_quote_from_cert_der(const uint8_t* cert_der, size_t cert_der_
     /* This is a simplified version - in production you'd use proper X.509 parsing */
     const uint8_t* ptr = cert_der;
     const uint8_t* end = cert_der + cert_der_len;
+    const uint8_t* search_ptr;
     
     /* Skip to extensions - this is a very simplified approach */
     /* In a real implementation, you'd properly parse the certificate structure */
