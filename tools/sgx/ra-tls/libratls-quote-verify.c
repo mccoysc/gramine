@@ -1717,6 +1717,7 @@ static int ratls_mbedtls_verify_callback(void *data, mbedtls_x509_crt *crt, int 
     }
     
     /* Run our RA-TLS verification (requires headers to access crt->raw) */
+    printf("[RA-TLS SO] (thread %d)platform instance id valid:%d\n",pthread_self(),g_platform_instance_id_valid);
     *flags = 0;
     struct ra_tls_verify_callback_results verify_callback_results={0};
     int ret = ra_tls_verify_callback_extended_der(crt->raw.p, crt->raw.len, &verify_callback_results);
