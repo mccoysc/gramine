@@ -1224,15 +1224,17 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         
     } else if (data_type == 5) {
         /* PCK certificate chain - extract SPKI fingerprint from leaf certificate */
-        /* Look for PEM certificate in cert_data */
-        const char* pem_start = memmem(cert_data, cert_data_size, "-----BEGIN CERTIFICATE-----", 27);
+        /* Look for PEM certificate in cert_data - use actual_cert_data_size to match JavaScript */
+        const char* pem_start = memmem(cert_data, actual_cert_data_size, "-----BEGIN CERTIFICATE-----", 27);
         
         if (!pem_start) {
             printf("[RA-TLS SO] No PEM certificate found in cert data type 5\n");
             return;
         }
         
-        const char* pem_end = memmem(pem_start, cert_data_size - (pem_start - (const char*)cert_data), 
+        /* Calculate remaining length from pem_start to end of actual cert_data */
+        size_t remaining_from_start = actual_cert_data_size - (pem_start - (const char*)cert_data);
+        const char* pem_end = memmem(pem_start, remaining_from_start, 
                                      "-----END CERTIFICATE-----", 25);
         if (!pem_end) {
             printf("[RA-TLS SO] Incomplete PEM certificate in cert data\n");
@@ -1243,13 +1245,24 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         size_t pem_len = pem_end - pem_start;
         
 #ifdef HAVE_MBEDTLS_HEADERS
-        /* Parse certificate using mbedTLS */
+        /* Parse certificate using mbedTLS - copy to null-terminated buffer */
+        /* This ensures proper PEM parsing as mbedTLS expects null-terminated strings */
+        char* pem_buf = malloc(pem_len + 1);
+        if (!pem_buf) {
+            printf("[RA-TLS SO] Failed to allocate memory for PEM buffer\n");
+            return;
+        }
+        memcpy(pem_buf, pem_start, pem_len);
+        pem_buf[pem_len] = '\0';
+        
         mbedtls_x509_crt pck_cert;
         mbedtls_x509_crt_init(&pck_cert);
         
-        int ret = mbedtls_x509_crt_parse(&pck_cert, (const unsigned char*)pem_start, pem_len + 1);
+        int ret = mbedtls_x509_crt_parse(&pck_cert, (const unsigned char*)pem_buf, pem_len + 1);
+        free(pem_buf);
+        
         if (ret != 0) {
-            printf("[RA-TLS SO] Failed to parse PCK certificate: %d\n", ret);
+            printf("[RA-TLS SO] Failed to parse PCK certificate: %d (0x%04x)\n", ret, (unsigned)(-ret & 0xFFFF));
             mbedtls_x509_crt_free(&pck_cert);
             return;
         }
