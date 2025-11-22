@@ -677,9 +677,7 @@ static int generate_ratls_credentials(void) {
         } else {
             printf("[RA-TLS SO] Could not extract quote from certificate (OpenSSL)\n");
         }
-        struct ra_tls_verify_callback_results verify_callback_results = {0};
-        int ret = ra_tls_verify_callback_extended_der(der, der_len, &verify_callback_results);
-        free(der);
+        
         printf("[RA-TLS SO] Verifying generated certificate...\n");
 
         struct ra_tls_verify_callback_results verify_callback_results = {0};
