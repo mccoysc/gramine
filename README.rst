@@ -183,9 +183,9 @@ Environment Variables
 
 - ``RATLS_ENABLE_VERIFY`` - Enable RA-TLS quote verification (set to ``1``)
 - ``RATLS_REQUIRE_PEER_CERT`` - Require peer certificates during TLS handshakes
-- ``RATLS_KEY_PATH`` - Path to private key file (default: ``/tmp/crt.key``)
+- ``RATLS_KEY_PATH`` - Path to private key file (default: ``/tmp/priv.key``)
 - ``RATLS_CERT_PATH`` - Path to certificate file (default: ``/tmp/crt.crt``)
-- ``RATLS_WHITELIST_CONFIG`` - Base64-encoded JSON configuration for SGX measurement whitelists
+- ``RATLS_WHITELIST_CONFIG`` - Base64-encoded CSV whitelist for SGX measurements (5 lines: MRENCLAVE, MRSIGNER, ISV_PROD_ID, ISV_SVN, PLATFORM_INSTANCE_ID). Each line contains comma-separated hex values. Empty lines or ``0`` tokens act as wildcards. Hex comparison is case-insensitive.
 
 **Verification Library (ra_tls_verify_dcap.so)**
 
@@ -205,12 +205,10 @@ Verification policy (insecure, testing only):
 
 **Certificate Generation (ra_tls_attest.c)**
 
-- ``RA_TLS_CERT_ALGORITHM`` - Certificate algorithm (e.g., ``secp256r1``, ``secp384r1``, ``rsa3072``)
-- ``RA_TLS_CERT_CONFIG_B64`` - Base64-encoded JSON configuration for advanced certificate options
-- ``RA_TLS_CERT_TIMESTAMP_NOT_BEFORE`` - Certificate validity start (YYYYMMDDhhmmss)
-- ``RA_TLS_CERT_TIMESTAMP_NOT_AFTER`` - Certificate validity end (YYYYMMDDhhmmss)
-
-For detailed certificate configuration options, see ``tools/sgx/ra-tls/CERTIFICATE_CONFIGURATION.md``.
+- ``RA_TLS_CERT_ALGORITHM`` - Certificate algorithm (e.g., ``secp256r1``, ``secp384r1``, ``secp521r1``, ``rsa2048``, ``rsa3072``, ``rsa4096``). Overrides JSON configuration if set.
+- ``RA_TLS_CERT_CONFIG_B64`` - Base64-encoded JSON for advanced certificate configuration. Ignored if ``RA_TLS_CERT_ALGORITHM`` is set. JSON fields: ``key_file``, ``key_format`` (pem/der), ``algorithm``, ``subject``, ``not_before``, ``not_after``, ``signature_md`` (sha256/sha384/sha512), ``is_ca``, ``ca_key_file``, ``ca_key_format``, ``ca_algorithm``, ``ca_cert_file``, ``ca_cert_format``, ``ca_subject``, ``ca_not_before``, ``ca_not_after``.
+- ``RA_TLS_CERT_TIMESTAMP_NOT_BEFORE`` - Certificate validity start (YYYYMMDDhhmmss format)
+- ``RA_TLS_CERT_TIMESTAMP_NOT_AFTER`` - Certificate validity end (YYYYMMDDhhmmss format)
 
 Important Notes
 ---------------

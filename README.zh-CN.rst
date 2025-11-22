@@ -165,9 +165,9 @@ Gramine 提供 ``libratls-quote-verify.so`` 用于通过 LD_PRELOAD 进行透明
 
 - ``RATLS_ENABLE_VERIFY`` - 启用 RA-TLS quote 验证（设置为 ``1``）
 - ``RATLS_REQUIRE_PEER_CERT`` - 在 TLS 握手期间要求对等证书
-- ``RATLS_KEY_PATH`` - 私钥文件路径（默认：``/tmp/crt.key``）
+- ``RATLS_KEY_PATH`` - 私钥文件路径（默认：``/tmp/priv.key``）
 - ``RATLS_CERT_PATH`` - 证书文件路径（默认：``/tmp/crt.crt``）
-- ``RATLS_WHITELIST_CONFIG`` - SGX 测量值白名单的 Base64 编码 JSON 配置
+- ``RATLS_WHITELIST_CONFIG`` - SGX 测量值白名单的 Base64 编码 CSV 格式（5 行：MRENCLAVE、MRSIGNER、ISV_PROD_ID、ISV_SVN、PLATFORM_INSTANCE_ID）。每行包含逗号分隔的十六进制值。空行或 ``0`` 标记作为通配符。十六进制比较不区分大小写。
 
 **验证库（ra_tls_verify_dcap.so）**
 
@@ -187,12 +187,10 @@ SGX 测量值验证：
 
 **证书生成（ra_tls_attest.c）**
 
-- ``RA_TLS_CERT_ALGORITHM`` - 证书算法（例如 ``secp256r1``、``secp384r1``、``rsa3072``）
-- ``RA_TLS_CERT_CONFIG_B64`` - 高级证书选项的 Base64 编码 JSON 配置
-- ``RA_TLS_CERT_TIMESTAMP_NOT_BEFORE`` - 证书有效期开始（YYYYMMDDhhmmss）
-- ``RA_TLS_CERT_TIMESTAMP_NOT_AFTER`` - 证书有效期结束（YYYYMMDDhhmmss）
-
-有关详细的证书配置选项，请参阅 ``tools/sgx/ra-tls/CERTIFICATE_CONFIGURATION.md``。
+- ``RA_TLS_CERT_ALGORITHM`` - 证书算法（例如 ``secp256r1``、``secp384r1``、``secp521r1``、``rsa2048``、``rsa3072``、``rsa4096``）。如果设置，将覆盖 JSON 配置。
+- ``RA_TLS_CERT_CONFIG_B64`` - 高级证书配置的 Base64 编码 JSON。如果设置了 ``RA_TLS_CERT_ALGORITHM`` 则忽略。JSON 字段：``key_file``、``key_format``（pem/der）、``algorithm``、``subject``、``not_before``、``not_after``、``signature_md``（sha256/sha384/sha512）、``is_ca``、``ca_key_file``、``ca_key_format``、``ca_algorithm``、``ca_cert_file``、``ca_cert_format``、``ca_subject``、``ca_not_before``、``ca_not_after``。
+- ``RA_TLS_CERT_TIMESTAMP_NOT_BEFORE`` - 证书有效期开始（YYYYMMDDhhmmss 格式）
+- ``RA_TLS_CERT_TIMESTAMP_NOT_AFTER`` - 证书有效期结束（YYYYMMDDhhmmss 格式）
 
 重要说明
 --------
