@@ -1630,49 +1630,29 @@ static int my_verify_callback(void *data, mbedtls_x509_crt *crt, int depth, uint
 
 #ifdef HAVE_MBEDTLS_HEADERS
     /* Extract platform instance ID from quote before running RA-TLS verification */
-    /* Try to find the quote in certificate extensions */
+    /* Use extract_quote_from_cert_der to properly parse the certificate DER */
     const uint8_t* quote_data = NULL;
     size_t quote_size = 0;
     
-    /* Try legacy OID first */
-    static const uint8_t legacy_oid[] = NON_STANDARD_INTEL_SGX_QUOTE_OID;
-    if (find_oid_in_extensions(crt->v3_ext.p, crt->v3_ext.len, legacy_oid, sizeof(legacy_oid), 
-                                &quote_data, &quote_size) == 0) {
-        printf("[RA-TLS SO] Found quote in legacy OID extension\n");
+    if (extract_quote_from_cert_der(crt->raw.p, crt->raw.len, &quote_data, &quote_size) == 0) {
+        /* Successfully extracted quote from certificate (legacy or DICE OID) */
         extract_platform_instance_id_from_quote(quote_data, quote_size);
     } else {
-        /* Try TCG DICE OID (without ASN.1 tag/length prefix to match what's embedded) */
-        static const uint8_t dice_oid[] = TCG_DICE_TAGGED_EVIDENCE_OID;
-        const uint8_t* dice_data = NULL;
-        size_t dice_size = 0;
+        printf("[RA-TLS SO] Neither legacy nor DICE OID found, platform instance ID extraction skipped\n");
         
-        if (find_oid_in_extensions(crt->v3_ext.p, crt->v3_ext.len, dice_oid, sizeof(dice_oid), 
-                                    &dice_data, &dice_size) == 0) {
-            printf("[RA-TLS SO] Found TCG DICE tagged evidence extension\n");
-            
-            /* Extract quote from CBOR structure */
-            if (extract_quote_from_dice_cbor(dice_data, dice_size, &quote_data, &quote_size) == 0) {
-                extract_platform_instance_id_from_quote(quote_data, quote_size);
-            } else {
-                printf("[RA-TLS SO] Failed to extract quote from DICE CBOR\n");
-            }
+        /* Dump certificate PEM for debugging */
+        uint8_t* pem_buf = NULL;
+        size_t pem_size = 0;
+        if (der_to_pem(PEM_CERT_HEADER, PEM_CERT_FOOTER, 
+                      (uint8_t*)crt->raw.p, crt->raw.len,
+                      &pem_buf, &pem_size) == 0) {
+            printf("[RA-TLS SO] Dumping certificate PEM for OID debugging:\n");
+            printf("----- RA-TLS DEBUG CERT START -----\n");
+            printf("%.*s", (int)pem_size, pem_buf);
+            printf("----- RA-TLS DEBUG CERT END -----\n");
+            free(pem_buf);
         } else {
-            printf("[RA-TLS SO] Neither legacy nor DICE OID found, platform instance ID extraction skipped\n");
-            
-            /* Dump certificate PEM for debugging */
-            uint8_t* pem_buf = NULL;
-            size_t pem_size = 0;
-            if (der_to_pem(PEM_CERT_HEADER, PEM_CERT_FOOTER, 
-                          (uint8_t*)crt->raw.p, crt->raw.len,
-                          &pem_buf, &pem_size) == 0) {
-                printf("[RA-TLS SO] Dumping certificate PEM for OID debugging:\n");
-                printf("----- RA-TLS DEBUG CERT START -----\n");
-                printf("%.*s", (int)pem_size, pem_buf);
-                printf("----- RA-TLS DEBUG CERT END -----\n");
-                free(pem_buf);
-            } else {
-                printf("[RA-TLS SO] Failed to convert certificate to PEM for debugging\n");
-            }
+            printf("[RA-TLS SO] Failed to convert certificate to PEM for debugging\n");
         }
     }
     
