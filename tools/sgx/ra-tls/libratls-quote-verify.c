@@ -1649,12 +1649,12 @@ static int verify_measurements_callback(const char *mrenclave, const char *mrsig
  * mbedTLS certificate verification callback
  * Calls user's callback first (discards result), then runs RA-TLS (uses our result)
  */
-static int my_verify_callback(void *data, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
+static int ratls_mbedtls_verify_callback(void *data, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
 {
     /* Check if RA-TLS verification is enabled */
     int enabled = is_ratls_enabled();
 
-    fprintf(stdout, "my_verify_callback\n");
+    fprintf(stdout, "ratls_mbedtls_verify_callback\n");
 
     /* Find user callback using the config pointer passed as data */
     mbedtls_ssl_config *conf = (mbedtls_ssl_config *)data;
@@ -2128,7 +2128,7 @@ void mbedtls_ssl_conf_verify(mbedtls_ssl_config *conf,
     /* Installation is handled by early-install wrappers (mbedtls_ssl_setup, mbedtls_ssl_handshake) */
 
     /* Check if callback is our own wrapper - ignore if so */
-    if (f_vrfy == my_verify_callback)
+    if (f_vrfy == ratls_mbedtls_verify_callback)
     {
         /* Don't store our own callback as user callback */
         return;
@@ -2155,7 +2155,7 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config *conf, int endpoint, int tran
         if (ret == 0)
         {
             printf("[RA-TLS SO] Intercepted mbedtls_ssl_config_defaults, installing RA-TLS callback\n");
-            mbedtls_ssl_conf_verify(conf, my_verify_callback, NULL);
+            mbedtls_ssl_conf_verify(conf, ratls_mbedtls_verify_callback, NULL);
         }
     }
     return ret;
@@ -2644,7 +2644,7 @@ int mbedtls_ssl_setup(mbedtls_ssl_context *ssl, const mbedtls_ssl_config *conf)
             {
                 /* Cast away const - mbedtls_ssl_setup receives const config but mbedtls_ssl_conf_verify expects non-const.
                  * This is safe because the config is built before handshake and mbedtls_ssl_conf_verify only modifies it. */
-                real_conf_verify((mbedtls_ssl_config *)conf, my_verify_callback, (void *)conf);
+                real_conf_verify((mbedtls_ssl_config *)conf, ratls_mbedtls_verify_callback, (void *)conf);
                 /* Mark as installed */
                 pthread_mutex_lock(&g_mbedtls_callback_mutex);
                 entry = find_mbedtls_callback(conf);
