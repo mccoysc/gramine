@@ -90,4 +90,138 @@ Reporting security issues
 
 Please report security issues to security@gramineproject.io. See also our
 `security policy <SECURITY.md>`__.
-# Test workflow trigger - Fri Nov 21 03:36:52 UTC 2025
+
+
+RA-TLS Quick Start
+==================
+
+This section provides a quick overview of RA-TLS (Remote Attestation TLS) configuration in Gramine.
+
+Prerequisites
+-------------
+
+For SGX remote attestation with DCAP, you need:
+
+- **aesmd service**: SGX Architectural Enclave Service Manager
+  
+  - Binary location: ``/opt/intel/sgx-aesm-service/aesm/aesm_service``
+  - Package: ``sgx-aesm-service`` (note: NOT ``libsgx-aesm-service``)
+  - Required plugins: ``libsgx-aesm-launch-plugin``, ``libsgx-aesm-pce-plugin``, ``libsgx-aesm-quote-ex-plugin``, ``libsgx-aesm-ecdsa-plugin``
+
+- **PCCS service** (optional, for local quote caching):
+  
+  - Package: ``sgx-dcap-pccs``
+  - Configuration: ``/opt/intel/sgx-dcap-pccs/config/default.json``
+  - Ports: HTTP 8080, HTTPS 8081
+
+- **QPL configuration**: Quote Provider Library
+  
+  - Configuration file: ``/etc/sgx_default_qcnl.conf``
+  - Specifies PCCS endpoint or direct Intel PCS access
+
+- **SGX device nodes**:
+  
+  - ``/dev/sgx_enclave`` - Required for running SGX enclaves
+  - ``/dev/sgx_provision`` - Required for DCAP attestation
+
+Building with DCAP Support
+---------------------------
+
+To build Gramine with DCAP support for RA-TLS::
+
+    meson setup build/ --buildtype=release -Ddcap=enabled
+    ninja -C build/
+    sudo ninja -C build/ install
+
+The ``-Ddcap=enabled`` flag is essential for compiling RA-TLS libraries with DCAP functionality.
+
+RA-TLS Library Usage
+---------------------
+
+Gramine provides ``libratls-quote-verify.so`` for transparent RA-TLS verification via LD_PRELOAD.
+
+**Automatic Injection via GRAMINE_LD_PRELOAD**
+
+Set the ``GRAMINE_LD_PRELOAD`` environment variable before running ``gramine-manifest``::
+
+    export GRAMINE_LD_PRELOAD="file:/usr/local/lib/x86_64-linux-gnu/libratls-quote-verify.so"
+    gramine-manifest my-app.manifest.template my-app.manifest
+
+This automatically:
+
+- Adds the library to ``sgx.trusted_files``
+- Sets ``loader.env.LD_PRELOAD`` to the library path
+- Sets ``loader.env.RATLS_ENABLE_VERIFY=1``
+- Creates necessary ``fs.mounts`` entries
+
+**Manual Configuration**
+
+Alternatively, configure LD_PRELOAD manually in your manifest template::
+
+    sgx.remote_attestation = "dcap"
+    
+    loader.env.LD_PRELOAD = "/usr/local/lib/x86_64-linux-gnu/libratls-quote-verify.so"
+    loader.env.RATLS_ENABLE_VERIFY = "1"
+    
+    sgx.trusted_files = [
+        "file:/usr/local/lib/x86_64-linux-gnu/libratls-quote-verify.so",
+    ]
+
+**Library Loading Verification**
+
+The library's constructor function always prints initialization logs when loaded, regardless of environment variables::
+
+    [RA-TLS SO] Initializing RA-TLS Quota Verification Library (v6)
+    [RA-TLS SO] Initialization complete
+
+If you don't see these logs, LD_PRELOAD injection failed.
+
+Environment Variables
+---------------------
+
+**LD_PRELOAD Library (libratls-quote-verify.so)**
+
+- ``RATLS_ENABLE_VERIFY`` - Enable RA-TLS quote verification (set to ``1``)
+- ``RATLS_REQUIRE_PEER_CERT`` - Require peer certificates during TLS handshakes
+- ``RATLS_KEY_PATH`` - Path to private key file (default: ``/tmp/crt.key``)
+- ``RATLS_CERT_PATH`` - Path to certificate file (default: ``/tmp/crt.crt``)
+- ``RATLS_WHITELIST_CONFIG`` - Base64-encoded JSON configuration for SGX measurement whitelists
+
+**Verification Library (ra_tls_verify_dcap.so)**
+
+SGX measurement verification:
+
+- ``RA_TLS_MRSIGNER`` - Expected MRSIGNER value (hex string)
+- ``RA_TLS_MRENCLAVE`` - Expected MRENCLAVE value (hex string)
+- ``RA_TLS_ISV_PROD_ID`` - Expected ISV_PROD_ID (decimal string)
+- ``RA_TLS_ISV_SVN`` - Expected ISV_SVN (decimal string)
+
+Verification policy (insecure, testing only):
+
+- ``RA_TLS_ALLOW_OUTDATED_TCB_INSECURE`` - Allow outdated TCB (set to ``1``)
+- ``RA_TLS_ALLOW_HW_CONFIG_NEEDED`` - Allow hardware configuration needed
+- ``RA_TLS_ALLOW_SW_HARDENING_NEEDED`` - Allow software hardening needed
+- ``RA_TLS_ALLOW_DEBUG_ENCLAVE_INSECURE`` - Allow debug enclaves (set to ``1``)
+
+**Certificate Generation (ra_tls_attest.c)**
+
+- ``RA_TLS_CERT_ALGORITHM`` - Certificate algorithm (e.g., ``secp256r1``, ``secp384r1``, ``rsa3072``)
+- ``RA_TLS_CERT_CONFIG_B64`` - Base64-encoded JSON configuration for advanced certificate options
+- ``RA_TLS_CERT_TIMESTAMP_NOT_BEFORE`` - Certificate validity start (YYYYMMDDhhmmss)
+- ``RA_TLS_CERT_TIMESTAMP_NOT_AFTER`` - Certificate validity end (YYYYMMDDhhmmss)
+
+For detailed certificate configuration options, see ``tools/sgx/ra-tls/CERTIFICATE_CONFIGURATION.md``.
+
+Important Notes
+---------------
+
+- **Verification failures do not exit the process**: Even if RA-TLS verification fails, the application continues running. This allows testing in environments without proper SGX configuration.
+- **Constructor logs always appear**: The library initialization logs are printed regardless of ``RATLS_ENABLE_VERIFY`` setting. Environment variables only control verification behavior during TLS handshakes.
+- **No auto-injection by default**: You must explicitly set ``GRAMINE_LD_PRELOAD`` or manually configure LD_PRELOAD in your manifest.
+
+For More Information
+--------------------
+
+- Complete RA-TLS documentation: `Documentation/attestation.rst <Documentation/attestation.rst>`__
+- Certificate configuration guide: `tools/sgx/ra-tls/CERTIFICATE_CONFIGURATION.md <tools/sgx/ra-tls/CERTIFICATE_CONFIGURATION.md>`__
+- Gramine manifest syntax: https://gramine.readthedocs.io/en/latest/manifest-syntax.html
