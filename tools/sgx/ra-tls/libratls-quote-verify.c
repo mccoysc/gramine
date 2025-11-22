@@ -996,42 +996,7 @@ static int extract_quote_from_cert_der(const uint8_t* cert_der, size_t cert_der_
     /* Skip to extensions - this is a very simplified approach */
     /* In a real implementation, you'd properly parse the certificate structure */
     
-    /* Try to find legacy OID */
-    static const uint8_t legacy_oid[] = NON_STANDARD_INTEL_SGX_QUOTE_OID;
-    const uint8_t* search_ptr = ptr;
-    while (search_ptr + sizeof(legacy_oid) < end) {
-        if (memcmp(search_ptr, legacy_oid, sizeof(legacy_oid)) == 0) {
-            /* Found legacy OID, now find the OCTET STRING after it */
-            const uint8_t* data_ptr = search_ptr + sizeof(legacy_oid);
-            /* Skip to OCTET STRING (tag 0x04) */
-            while (data_ptr < end && *data_ptr != 0x04) {
-                data_ptr++;
-                if (data_ptr - search_ptr > 100) break; /* Safety limit */
-            }
-            if (data_ptr < end && *data_ptr == 0x04) {
-                data_ptr++; /* Skip tag */
-                /* Parse length */
-                size_t len = *data_ptr++;
-                if (len & 0x80) {
-                    size_t num_bytes = len & 0x7F;
-                    if (data_ptr + num_bytes > end) return -1;
-                    len = 0;
-                    for (size_t i = 0; i < num_bytes; i++) {
-                        len = (len << 8) | *data_ptr++;
-                    }
-                }
-                if (data_ptr + len <= end) {
-                    *out_quote = data_ptr;
-                    *out_quote_size = len;
-                    printf("[RA-TLS SO] Found quote in legacy OID (DER)\n");
-                    return 0;
-                }
-            }
-        }
-        search_ptr++;
-    }
-    
-    /* Try DICE OID */
+    /* Try DICE OID first (standard) - matches JavaScript extractQuoteFromParsedCert() order */
     static const uint8_t dice_oid[] = TCG_DICE_TAGGED_EVIDENCE_OID_RAW;
     search_ptr = ptr;
     while (search_ptr + sizeof(dice_oid) < end) {
@@ -1071,6 +1036,59 @@ static int extract_quote_from_cert_der(const uint8_t* cert_der, size_t cert_der_
         search_ptr++;
     }
     
+    /* Try legacy OID as fallback - matches JavaScript extractQuoteFromParsedCert() order */
+    static const uint8_t legacy_oid[] = NON_STANDARD_INTEL_SGX_QUOTE_OID;
+    search_ptr = ptr;
+    while (search_ptr + sizeof(legacy_oid) < end) {
+        if (memcmp(search_ptr, legacy_oid, sizeof(legacy_oid)) == 0) {
+            /* Found legacy OID, now find the OCTET STRING after it */
+            const uint8_t* data_ptr = search_ptr + sizeof(legacy_oid);
+            /* Skip to OCTET STRING (tag 0x04) */
+            while (data_ptr < end && *data_ptr != 0x04) {
+                data_ptr++;
+                if (data_ptr - search_ptr > 100) break; /* Safety limit */
+            }
+            if (data_ptr < end && *data_ptr == 0x04) {
+                data_ptr++; /* Skip tag */
+                /* Parse length */
+                size_t len = *data_ptr++;
+                if (len & 0x80) {
+                    size_t num_bytes = len & 0x7F;
+                    if (data_ptr + num_bytes > end) return -1;
+                    len = 0;
+                    for (size_t i = 0; i < num_bytes; i++) {
+                        len = (len << 8) | *data_ptr++;
+                    }
+                }
+                if (data_ptr + len <= end) {
+                    /* Validate and clamp quote size - matches JavaScript extractLegacyQuoteFromExtension() */
+                    if (len < 436) {
+                        printf("[RA-TLS SO] Legacy quote extension too short: %zu bytes (expected at least 436)\n", len);
+                        return -1;
+                    }
+                    
+                    /* Read signature_size from quote at offset 432 */
+                    uint32_t signature_size;
+                    memcpy(&signature_size, data_ptr + 432, 4);
+                    size_t expected_quote_size = 432 + 4 + signature_size;
+                    
+                    /* Clamp to available data - matches JavaScript */
+                    size_t actual_quote_size = len;
+                    if (expected_quote_size <= len) {
+                        actual_quote_size = expected_quote_size;
+                    }
+                    /* Note: If expected > len, we use truncated buffer like JavaScript */
+                    
+                    *out_quote = data_ptr;
+                    *out_quote_size = actual_quote_size;
+                    printf("[RA-TLS SO] Found quote in legacy OID (DER), size: %zu bytes\n", actual_quote_size);
+                    return 0;
+                }
+            }
+        }
+        search_ptr++;
+    }
+    
     return -1;
 }
 
@@ -1089,9 +1107,19 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         return;
     }
     
-    /* Parse quote header to get signature size */
-    /* Quote structure: version(2) + sign_type(2) + epid_group_id(4) + qe_svn(2) + pce_svn(2) + xeid(4) + basename(32) + report_body(384) + signature_size(4) + signature[] */
-    const size_t quote_body_size = 48 + 384; /* header + report_body */
+    /* Parse quote header - matches JavaScript parseQuoteStructure() */
+    /* Quote structure: version(2) + attestationKeyType(2) + teeType(4) + qeSvn(2) + pceSvn(2) + qeVendorId(16) + userData(20) = 48 bytes header */
+    /* Then: report_body(384) + signatureSize(4) + signature[] */
+    
+    uint16_t version;
+    memcpy(&version, quote_data, 2);
+    
+    uint16_t attestation_key_type;
+    memcpy(&attestation_key_type, quote_data + 2, 2);
+    
+    const size_t quote_header_size = 48;
+    const size_t report_body_size = 384;
+    const size_t quote_body_size = quote_header_size + report_body_size; /* 48 + 384 = 432 */
     
     if (quote_size < quote_body_size + 4) {
         printf("[RA-TLS SO] Quote too small for signature: %zu bytes\n", quote_size);
@@ -1107,25 +1135,29 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         return;
     }
     
+    /* Only process ECDSA quotes (version 3 or 4) - matches JavaScript */
+    if (version != 3 && version != 4) {
+        printf("[RA-TLS SO] Quote version %u not supported for platform instance ID extraction\n", version);
+        return;
+    }
+    
     const uint8_t* sig_data = quote_data + quote_body_size + 4;
     
-    /* Parse ECDSA signature data structure */
-    /* Try P-256 layout: sig(64) + attest_pub_key(64) + qe_report(384) + qe_report_sig(64) + auth_data + cert_data */
+    /* Parse ECDSA signature data structure - matches JavaScript parseEcdsaSignatureData() */
+    /* attestationKeyType: 2 = ECDSA-P256, 3 = ECDSA-P384 */
+    size_t coord_size = (attestation_key_type == 3) ? 48 : 32;
+    size_t sig_len = coord_size * 2;      /* P-256: 64, P-384: 96 */
+    size_t pubkey_len = coord_size * 2;   /* P-256: 64, P-384: 96 */
+    
     size_t offset = 0;
-    uint16_t attestation_key_type;
-    memcpy(&attestation_key_type, sig_data + offset, 2);
-    offset += 2;
-    
-    size_t sig_len = (attestation_key_type == 2) ? 64 : 96;  /* P-256: 64, P-384: 96 */
-    size_t pubkey_len = (attestation_key_type == 2) ? 64 : 96;
-    
-    offset += sig_len;           /* Skip signature */
+    offset += sig_len;           /* Skip ECDSA signature */
     offset += pubkey_len;        /* Skip attestation public key */
     offset += 384;               /* Skip QE report body */
     offset += sig_len;           /* Skip QE report signature */
     
+    /* Check if we have enough bytes for auth_data_len (2 bytes) - matches JavaScript */
     if (offset + 2 > signature_size) {
-        printf("[RA-TLS SO] Signature data too small for auth_data_len\n");
+        /* JavaScript silently returns here, so we do the same */
         return;
     }
     
@@ -1133,41 +1165,50 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
     memcpy(&auth_data_len, sig_data + offset, 2);
     offset += 2;
     
-    offset += auth_data_len;     /* Skip auth data */
+    /* Skip auth data if present and valid - matches JavaScript */
+    if (auth_data_len > 0 && offset + auth_data_len <= signature_size) {
+        offset += auth_data_len;
+    }
+    /* Note: JavaScript does NOT bail if auth_data_len is too large, it just doesn't consume it */
     
-    if (offset + 2 > signature_size) {
-        printf("[RA-TLS SO] Signature data too small for cert_data_type\n");
+    /* Check if we have enough bytes for cert_data_type (2 bytes) + cert_data_size (4 bytes) = 6 bytes total */
+    /* This matches JavaScript behavior which checks: if (offset + 6 <= sigData.length) */
+    if (offset + 6 > signature_size) {
+        /* JavaScript silently returns here, so we do the same */
         return;
     }
     
+    /* Now we pass remaining data to parseCertificationData equivalent */
+    const uint8_t* cert_data_buffer = sig_data + offset;
+    size_t cert_data_buffer_size = signature_size - offset;
+    
+    /* Parse certification data header - matches JavaScript parseCertificationData() */
+    size_t cert_offset = 0;
     uint16_t cert_data_type;
-    memcpy(&cert_data_type, sig_data + offset, 2);
-    offset += 2;
-    
-    if (offset + 4 > signature_size) {
-        printf("[RA-TLS SO] Signature data too small for cert_data_size\n");
-        return;
-    }
+    memcpy(&cert_data_type, cert_data_buffer + cert_offset, 2);
+    cert_offset += 2;
     
     uint32_t cert_data_size;
-    memcpy(&cert_data_size, sig_data + offset, 4);
-    offset += 4;
+    memcpy(&cert_data_size, cert_data_buffer + cert_offset, 4);
+    cert_offset += 4;
     
-    if (offset + cert_data_size > signature_size) {
-        printf("[RA-TLS SO] Cert data size mismatch: offset=%zu, cert_data_size=%u, signature_size=%u\n",
-               offset, cert_data_size, signature_size);
-        return;
+    /* Clamp cert_data_size to available buffer - matches JavaScript */
+    size_t actual_cert_data_size = cert_data_size;
+    if (cert_offset + cert_data_size > cert_data_buffer_size) {
+        actual_cert_data_size = cert_data_buffer_size - cert_offset;
     }
     
-    const uint8_t* cert_data = sig_data + offset;
+    const uint8_t* cert_data = cert_data_buffer + cert_offset;
     uint8_t data_type = cert_data_type & 0xFF;
     
     printf("[RA-TLS SO] Certification data type: %u\n", data_type);
     
     if (data_type == 1) {
         /* PPID-based certification data */
-        if (cert_data_size < 16) {
-            printf("[RA-TLS SO] PPID cert data too small: %u bytes\n", cert_data_size);
+        /* JavaScript requires at least 36 bytes: PPID(16) + CPUSVN(16) + PCESVN(2) + PCEID(2) */
+        /* Check actual extracted size, not declared size - matches JavaScript */
+        if (actual_cert_data_size < 36) {
+            printf("[RA-TLS SO] PPID-based cert data too small: %zu bytes (expected at least 36)\n", actual_cert_data_size);
             return;
         }
         
@@ -1178,7 +1219,7 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         g_platform_instance_id[32] = '\0';
         g_platform_instance_id_valid = 1;
         
-        printf("[RA-TLS SO] Extracted platform instance ID from PPID: %s\n", g_platform_instance_id);
+        printf("[RA-TLS SO] Platform instance ID (PPID): %s\n", g_platform_instance_id);
         
     } else if (data_type == 5) {
         /* PCK certificate chain - extract SPKI fingerprint from leaf certificate */
