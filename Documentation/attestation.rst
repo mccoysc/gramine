@@ -349,6 +349,76 @@ refer to the official Intel documentation:
 - `Intel ECDSA/DCAP
   <https://download.01.org/intel-sgx/latest/dcap-latest/linux/docs/Intel_SGX_ECDSA_QuoteLibReference_DCAP_API.pdf>`__
 
+``libratls-quote-verify.so`` (LD_PRELOAD Usage)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``libratls-quote-verify.so`` library provides transparent RA-TLS quote
+verification through LD_PRELOAD injection. When loaded via LD_PRELOAD, this
+library automatically intercepts TLS connections and performs SGX quote
+verification without requiring application code modifications.
+
+**LD_PRELOAD Injection**:
+
+The library can be injected into applications by setting the LD_PRELOAD
+environment variable in the manifest::
+
+    loader.env.LD_PRELOAD = "libratls-quote-verify.so"
+
+When loaded, the library's constructor function (``ratls_quota_init``) executes
+automatically at application startup and prints initialization logs, regardless
+of whether verification is enabled. This provides confirmation that the library
+was successfully loaded.
+
+**Environment Variables**:
+
+The library uses the following environment variables to control verification
+behavior:
+
+- ``RATLS_ENABLE_VERIFY`` (optional) -- set to ``1`` or ``true`` to enable
+  RA-TLS quote verification during TLS handshakes. When not set or set to ``0``,
+  the library loads but does not perform verification (passthrough mode).
+
+- ``RATLS_REQUIRE_PEER_CERT`` (optional) -- set to ``1`` to require peer
+  certificates during TLS handshakes. By default, peer certificates are optional.
+
+- ``RATLS_KEY_PATH`` (optional) -- path to the private key file for TLS
+  connections. If not specified, the library uses default key locations.
+
+- ``RATLS_CERT_PATH`` (optional) -- path to the certificate file for TLS
+  connections. If not specified, the library uses default certificate locations.
+
+- ``RATLS_WHITELIST_CONFIG`` (optional) -- path to a JSON configuration file
+  specifying SGX measurement whitelists for verification. This allows fine-grained
+  control over which enclaves are trusted.
+
+**Verification Behavior**:
+
+When ``RATLS_ENABLE_VERIFY`` is enabled, the library intercepts TLS handshakes
+and extracts SGX quotes from X.509 certificates. It then verifies these quotes
+using the same environment variables as ``ra_tls_verify_dcap.so``
+(``RA_TLS_MRSIGNER``, ``RA_TLS_MRENCLAVE``, ``RA_TLS_ISV_PROD_ID``,
+``RA_TLS_ISV_SVN``, ``RA_TLS_ALLOW_OUTDATED_TCB_INSECURE``, etc.).
+
+**Use Cases**:
+
+This LD_PRELOAD approach is particularly useful for:
+
+- Securing existing applications without source code modifications
+- Enforcing RA-TLS verification policies at the infrastructure level
+- Transparent integration with container orchestration systems
+- Testing and development workflows where recompiling applications is impractical
+
+**Important Notes**:
+
+- The library must be added to ``sgx.trusted_files`` in the manifest for SGX
+  enclaves to load it successfully.
+- The library is not thread-safe and should be used with caution in
+  multi-threaded applications.
+- Initialization logs are always printed when the library loads, providing
+  confirmation of successful LD_PRELOAD injection.
+- The library expects all DCAP infrastructure (aesmd, PCCS, QPL) to be properly
+  configured on the host system.
+
 High-level Secret Provisioning interface
 ----------------------------------------
 
