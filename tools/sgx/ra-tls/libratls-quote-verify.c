@@ -1641,8 +1641,8 @@ static int my_verify_callback(void *data, mbedtls_x509_crt *crt, int depth, uint
         printf("[RA-TLS SO] Found quote in legacy OID extension\n");
         extract_platform_instance_id_from_quote(quote_data, quote_size);
     } else {
-        /* Try TCG DICE OID */
-        static const uint8_t dice_oid[] = TCG_DICE_TAGGED_EVIDENCE_OID_RAW;
+        /* Try TCG DICE OID (without ASN.1 tag/length prefix to match what's embedded) */
+        static const uint8_t dice_oid[] = TCG_DICE_TAGGED_EVIDENCE_OID;
         const uint8_t* dice_data = NULL;
         size_t dice_size = 0;
         
