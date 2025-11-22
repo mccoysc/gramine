@@ -1399,6 +1399,8 @@ static int verify_measurements_callback(const char *mrenclave, const char *mrsig
     uint16_t svn = *(const uint16_t*)isv_svn;
     printf("[RA-TLS SO]   ISV_PROD_ID: %u (0x%04x)\n", prod_id, prod_id);
     printf("[RA-TLS SO]   ISV_SVN:     %u (0x%04x)\n", svn, svn);
+    if(g_platform_instance_id_valid) 
+        printf("[RA-TLS SO]   Platform instance ID: %s\n", g_platform_instance_id);
 
     /* First, call user's callback if set */
     pthread_mutex_lock(&g_user_measurements_cb_mutex);
