@@ -149,8 +149,34 @@ jobs:
             echo "Merge completed successfully without conflicts"
           fi
 
-      - name: Push branch and open PR
+      - name: Check for actual changes
         if: steps.merge.outputs.conflict == 'false' && steps.check.outputs.already != 'true'
+        id: changes
+        run: |
+          set -e
+          # Fetch latest master to ensure we're comparing against the remote
+          git fetch origin master
+          
+          # Check if there are any commits between origin/master and current HEAD
+          if git log --oneline origin/master..HEAD | grep -q .; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changes detected - PR will be created"
+            git log --oneline origin/master..HEAD
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No changes detected - already synced to ${{ steps.detect.outputs.target_ref }}"
+            
+            # Create synced tag since we're already at this version
+            TARGET="${{ steps.detect.outputs.target_ref }}"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "synced/${TARGET}" -m "Already synced to upstream ${TARGET}" -m "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            git push origin "synced/${TARGET}"
+            echo "Created and pushed tag: synced/${TARGET}"
+          fi
+
+      - name: Push branch and open PR
+        if: steps.merge.outputs.conflict == 'false' && steps.check.outputs.already != 'true' && steps.changes.outputs.has_changes == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -158,7 +184,7 @@ jobs:
           echo "Pushed branch: ${{ steps.prep.outputs.branch }}"
 
       - name: Create PR via API
-        if: steps.merge.outputs.conflict == 'false' && steps.check.outputs.already != 'true'
+        if: steps.merge.outputs.conflict == 'false' && steps.check.outputs.already != 'true' && steps.changes.outputs.has_changes == 'true'
         uses: actions/github-script@v7
         with:
           script: |
