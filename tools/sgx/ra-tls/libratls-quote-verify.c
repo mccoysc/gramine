@@ -1658,6 +1658,21 @@ static int my_verify_callback(void *data, mbedtls_x509_crt *crt, int depth, uint
             }
         } else {
             printf("[RA-TLS SO] Neither legacy nor DICE OID found, platform instance ID extraction skipped\n");
+            
+            /* Dump certificate PEM for debugging */
+            uint8_t* pem_buf = NULL;
+            size_t pem_size = 0;
+            if (der_to_pem(PEM_CERT_HEADER, PEM_CERT_FOOTER, 
+                          (uint8_t*)crt->raw.p, crt->raw.len,
+                          &pem_buf, &pem_size) == 0) {
+                printf("[RA-TLS SO] Dumping certificate PEM for OID debugging:\n");
+                printf("----- RA-TLS DEBUG CERT START -----\n");
+                printf("%.*s", (int)pem_size, pem_buf);
+                printf("----- RA-TLS DEBUG CERT END -----\n");
+                free(pem_buf);
+            } else {
+                printf("[RA-TLS SO] Failed to convert certificate to PEM for debugging\n");
+            }
         }
     }
     
