@@ -734,7 +734,16 @@ static int generate_ratls_credentials(void)
         fprintf(stderr, "[RA-TLS SO] Failed to write cert to PEM:%s\n", cert_path);
         goto err;
     }
-
+    if(setenv(ENV_RATLS_KEY_PATH, key_path, 0)<0){
+        fprintf(stderr, "[RA-TLS SO] Failed to set %s env variable\n", ENV_RATLS_KEY_PATH);
+    }else{
+        printf("[RA-TLS SO] Set %s env variable to %s\n", ENV_RATLS_KEY_PATH, key_path);
+    }
+    if(setenv(ENV_RATLS_CERT_PATH, cert_path, 0)<0){
+        fprintf(stderr, "[RA-TLS SO] Failed to set %s env variable\n", ENV_RATLS_CERT_PATH);
+    }else{
+        printf("[RA-TLS SO] Set %s env variable to %s\n", ENV_RATLS_CERT_PATH, cert_path);
+    }
     printf("[RA-TLS SO] Saved certificate: %s\n", cert_path);
 
     /* Verify the generated certificate using the in-memory DER buffer */
