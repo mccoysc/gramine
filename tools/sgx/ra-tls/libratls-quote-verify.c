@@ -168,6 +168,13 @@ static _Thread_local char g_platform_instance_id[129] = {0}; /* 64 bytes = 128 h
 static _Thread_local int g_platform_instance_id_valid = 0;
 
 /**
+ * Helper function to extract quote from DER-encoded certificate
+ * Tries both legacy OID and DICE OID
+ */
+static int extract_quote_from_cert_der(const uint8_t* cert_der, size_t cert_der_len,
+                                       const uint8_t** out_quote, size_t* out_quote_size);
+
+/**
  * Helper functions to read environment variables in real-time
  */
 static inline int is_ratls_enabled(void) {
@@ -179,6 +186,8 @@ static inline int is_require_peer_cert_enabled(void) {
     const char* val = getenv(ENV_RATLS_REQUIRE_PEER_CERT);
     return (val && strcmp(val, "1") == 0);
 }
+
+
 
 /**
  * Helper functions for callback tracking
@@ -677,7 +686,7 @@ static int generate_ratls_credentials(void) {
         } else {
             printf("[RA-TLS SO] Could not extract quote from certificate (OpenSSL)\n");
         }
-        
+
         printf("[RA-TLS SO] Verifying generated certificate...\n");
 
         struct ra_tls_verify_callback_results verify_callback_results = {0};
