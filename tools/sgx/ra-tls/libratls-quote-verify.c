@@ -175,6 +175,12 @@ static int extract_quote_from_cert_der(const uint8_t* cert_der, size_t cert_der_
                                        const uint8_t** out_quote, size_t* out_quote_size);
 
 /**
+ * Helper function to extract platform instance ID from SGX quote
+ * Extracts PPID (type 1) or computes PCK SPKI fingerprint (type 5)
+ */
+static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, size_t quote_size);
+
+/**
  * Helper functions to read environment variables in real-time
  */
 static inline int is_ratls_enabled(void) {
