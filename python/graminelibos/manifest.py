@@ -349,6 +349,7 @@ class Manifest:
                 tmp_preload=preload.replace('file:', '')
             # set LD_PRELOAD
             manifest['loader']['env']['LD_PRELOAD'] = tmp_preload
+            manifest['loader']['env']['RATLS_ENABLE_VERIFY'] = "1"
 
             # add mount point for preload in fs.mount
             if not 'fs' in manifest:
