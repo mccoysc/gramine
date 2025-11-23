@@ -349,8 +349,9 @@ class Manifest:
                 tmp_preload=preload.replace('file:', '')
             # set LD_PRELOAD
             manifest['loader']['env']['LD_PRELOAD'] = tmp_preload
+            if 'debug' in manifest['sgx'] and manifest['sgx']['debug']:
+                manifest['loader']['env']['RA_TLS_ALLOW_DEBUG_ENCLAVE_INSECURE'] = True
             manifest['loader']['env']['RATLS_ENABLE_VERIFY'] = "1"
-            manifest['loader']['env']['RA_TLS_ALLOW_DEBUG_ENCLAVE_INSECURE'] = "1"
             manifest['loader']['env']['RA_TLS_ALLOW_OUTDATED_TCB_INSECURE'] = "1"
             manifest['loader']['env']['RA_TLS_ALLOW_HW_CONFIG_NEEDED'] = "1"
             manifest['loader']['env']['RA_TLS_ALLOW_SW_HARDENING_NEEDED'] = "1"
