@@ -1293,7 +1293,7 @@ out:
 
 static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, uint8_t** crt_der,
                               size_t* crt_der_size) {
-    int ret;
+    int ret=0;
 
     if (!key || (!crt && !(crt_der && crt_der_size))) {
         /* mbedTLS API (ra_tls_create_key_and_crt) and generic API (ra_tls_create_key_and_crt_der)
