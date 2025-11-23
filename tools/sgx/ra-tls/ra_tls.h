@@ -72,14 +72,17 @@ struct ra_tls_verify_callback_results {
 };
 
 typedef int (*verify_measurements_cb_t)(const char* mrenclave, const char* mrsigner,
-                                        const char* isv_prod_id, const char* isv_svn);
+                                        const char* isv_prod_id, const char* isv_svn,
+                                        const char* platform_instance_id,
+                                        const uint8_t* cert_der, size_t cert_der_size);
 
 /*!
  * \brief Callback for user-specific verification of measurements in SGX quote.
  *
  * \param f_cb  Callback for user-specific verification; RA-TLS passes pointers to MRENCLAVE,
- *              MRSIGNER, ISV_PROD_ID, ISV_SVN measurements in SGX quote. Use NULL to revert to
- *              default behavior of RA-TLS.
+ *              MRSIGNER, ISV_PROD_ID, ISV_SVN measurements in SGX quote, platform instance ID
+ *              (if available), and the certificate DER bytes. Use NULL to revert to default
+ *              behavior of RA-TLS.
  *
  * \returns 0 on success, specific error code (negative int) otherwise.
  *
@@ -87,6 +90,19 @@ typedef int (*verify_measurements_cb_t)(const char* mrenclave, const char* mrsig
  * callback to allow for user-specific checks on SGX measurements reported in the SGX quote. If no
  * callback is registered (or registered as NULL), then RA-TLS defaults to verifying SGX
  * measurements against `RA_TLS_*` environment variables (if any).
+ *
+ * The platform_instance_id parameter is a hex string representing the platform instance identifier
+ * extracted from the SGX quote's certification data (PPID for type 1, or PCK SPKI hash for type 5).
+ * It may be NULL if the platform instance ID could not be extracted or is not available.
+ *
+ * The cert_der and cert_der_size parameters provide access to the raw certificate DER bytes. This
+ * allows the callback to parse or inspect the certificate if needed. These parameters are always
+ * non-NULL and valid.
+ *
+ * NOTE: The last three parameters (platform_instance_id, cert_der, cert_der_size) were added to
+ * maintain backward compatibility with legacy callbacks compiled against the old 4-parameter
+ * signature. On x86-64 Linux (System V ABI), old callbacks will safely ignore the extra parameters.
+ * However, mixing new callbacks with old RA-TLS libraries is not supported.
  */
 void ra_tls_set_measurement_callback(verify_measurements_cb_t f_cb);
 

@@ -33,7 +33,9 @@
 struct ra_tls_ctx;
 
 typedef int (*verify_measurements_cb_t)(const char* mrenclave, const char* mrsigner,
-                                        const char* isv_prod_id, const char* isv_svn);
+                                        const char* isv_prod_id, const char* isv_svn,
+                                        const char* platform_instance_id,
+                                        const uint8_t* cert_der, size_t cert_der_size);
 
 typedef int (*secret_provision_cb_t)(struct ra_tls_ctx* ctx);
 

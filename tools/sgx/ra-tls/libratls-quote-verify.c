@@ -163,9 +163,6 @@ static int g_ratls_verify_initialized = 0;
 /* Reentrancy guard to prevent storing our own callbacks as user callbacks */
 static _Thread_local int g_installing_ours = 0;
 
-/* Thread-local storage for platform instance ID extracted from quote */
-static _Thread_local char g_platform_instance_id[129] = {0}; /* 64 bytes = 128 hex chars + null */
-static _Thread_local int g_platform_instance_id_valid = 0;
 
 /**
  * Helper function to extract quote from DER-encoded certificate
@@ -176,9 +173,6 @@ static int extract_quote_from_cert_der(const uint8_t* cert_der, size_t cert_der_
 
 /**
  * Helper function to extract platform instance ID from SGX quote
- * Extracts PPID (type 1) or computes PCK SPKI fingerprint (type 5)
- */
-static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, size_t quote_size);
 
 /**
  * Helper functions to read environment variables in real-time
@@ -684,14 +678,6 @@ static int generate_ratls_credentials(void) {
     const char* ratls_enable = getenv(ENV_RATLS_ENABLE_VERIFY);
     if (ratls_enable && strcmp(ratls_enable, "1") == 0) {
         /* Extract platform instance ID from quote before running RA-TLS verification */
-        const uint8_t* quote_data = NULL;
-        size_t quote_size         = 0;
-        if (extract_quote_from_cert_der(crt_der, crt_der_size, &quote_data, &quote_size) == 0) {
-            extract_platform_instance_id_from_quote(quote_data, quote_size);
-            printf("[RA-TLS SO] (thread %ld) g_platform_instance_id_valid:%d\n", (long)pthread_self(), g_platform_instance_id_valid);
-        } else {
-            printf("[RA-TLS SO] Could not extract quote from certificate (OpenSSL)\n");
-        }
 
         printf("[RA-TLS SO] Verifying generated certificate...\n");
 
@@ -1055,218 +1041,6 @@ static int extract_quote_from_cert_der(const uint8_t* cert_der, size_t cert_der_
  * Helper function to extract platform instance ID from SGX quote
  * Extracts PPID (type 1) or computes PCK SPKI fingerprint (type 5)
  */
-static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, size_t quote_size) {
-    /* Reset platform instance ID */
-    g_platform_instance_id_valid = 0;
-    memset(g_platform_instance_id, 0, sizeof(g_platform_instance_id));
-
-    if (!quote_data || quote_size < 48) {
-        printf("[RA-TLS SO] Quote too small to parse: %zu bytes\n", quote_size);
-        return;
-    }
-
-    /* Parse quote header - matches JavaScript parseQuoteStructure() */
-    /* Quote structure: version(2) + attestationKeyType(2) + teeType(4) + qeSvn(2) + pceSvn(2) +
-     * qeVendorId(16) + userData(20) = 48 bytes header */
-    /* Then: report_body(384) + signatureSize(4) + signature[] */
-
-    uint16_t version;
-    memcpy(&version, quote_data, 2);
-
-    uint16_t attestation_key_type;
-    memcpy(&attestation_key_type, quote_data + 2, 2);
-
-    const size_t quote_header_size = 48;
-    const size_t report_body_size  = 384;
-    const size_t quote_body_size   = quote_header_size + report_body_size; /* 48 + 384 = 432 */
-
-    if (quote_size < quote_body_size + 4) {
-        printf("[RA-TLS SO] Quote too small for signature: %zu bytes\n", quote_size);
-        return;
-    }
-
-    uint32_t signature_size;
-    memcpy(&signature_size, quote_data + quote_body_size, 4);
-
-    if (quote_size < quote_body_size + 4 + signature_size) {
-        printf("[RA-TLS SO] Quote size mismatch: expected %zu, got %zu\n",
-               quote_body_size + 4 + signature_size, quote_size);
-        return;
-    }
-
-    /* Only process ECDSA quotes (version 3 or 4) - matches JavaScript */
-    if (version != 3 && version != 4) {
-        printf("[RA-TLS SO] Quote version %u not supported for platform instance ID extraction\n",
-               version);
-        return;
-    }
-
-    const uint8_t* sig_data = quote_data + quote_body_size + 4;
-
-    /* Parse ECDSA signature data structure - matches JavaScript parseEcdsaSignatureData() */
-    /* attestationKeyType: 2 = ECDSA-P256, 3 = ECDSA-P384 */
-    size_t coord_size = (attestation_key_type == 3) ? 48 : 32;
-    size_t sig_len    = coord_size * 2; /* P-256: 64, P-384: 96 */
-    size_t pubkey_len = coord_size * 2; /* P-256: 64, P-384: 96 */
-
-    size_t offset = 0;
-    offset += sig_len;    /* Skip ECDSA signature */
-    offset += pubkey_len; /* Skip attestation public key */
-    offset += 384;        /* Skip QE report body */
-    offset += sig_len;    /* Skip QE report signature */
-
-    /* Check if we have enough bytes for auth_data_len (2 bytes) - matches JavaScript */
-    if (offset + 2 > signature_size) {
-        /* JavaScript silently returns here, so we do the same */
-        return;
-    }
-
-    uint16_t auth_data_len;
-    memcpy(&auth_data_len, sig_data + offset, 2);
-    offset += 2;
-
-    /* Skip auth data if present and valid - matches JavaScript */
-    if (auth_data_len > 0 && offset + auth_data_len <= signature_size) {
-        offset += auth_data_len;
-    }
-    /* Note: JavaScript does NOT bail if auth_data_len is too large, it just doesn't consume it */
-
-    /* Check if we have enough bytes for cert_data_type (2 bytes) + cert_data_size (4 bytes) = 6
-     * bytes total */
-    /* This matches JavaScript behavior which checks: if (offset + 6 <= sigData.length) */
-    if (offset + 6 > signature_size) {
-        /* JavaScript silently returns here, so we do the same */
-        return;
-    }
-
-    /* Now we pass remaining data to parseCertificationData equivalent */
-    const uint8_t* cert_data_buffer = sig_data + offset;
-    size_t cert_data_buffer_size    = signature_size - offset;
-
-    /* Parse certification data header - matches JavaScript parseCertificationData() */
-    size_t cert_offset = 0;
-    uint16_t cert_data_type;
-    memcpy(&cert_data_type, cert_data_buffer + cert_offset, 2);
-    cert_offset += 2;
-
-    uint32_t cert_data_size;
-    memcpy(&cert_data_size, cert_data_buffer + cert_offset, 4);
-    cert_offset += 4;
-
-    /* Clamp cert_data_size to available buffer - matches JavaScript */
-    size_t actual_cert_data_size = cert_data_size;
-    if (cert_offset + cert_data_size > cert_data_buffer_size) {
-        actual_cert_data_size = cert_data_buffer_size - cert_offset;
-    }
-
-    const uint8_t* cert_data = cert_data_buffer + cert_offset;
-    uint8_t data_type        = cert_data_type & 0xFF;
-
-    printf("[RA-TLS SO] Certification data type: %u\n", data_type);
-
-    if (data_type == 1) {
-        /* PPID-based certification data */
-        /* JavaScript requires at least 36 bytes: PPID(16) + CPUSVN(16) + PCESVN(2) + PCEID(2) */
-        /* Check actual extracted size, not declared size - matches JavaScript */
-        if (actual_cert_data_size < 36) {
-            printf("[RA-TLS SO] PPID-based cert data too small: %zu bytes (expected at least 36)\n",
-                   actual_cert_data_size);
-            return;
-        }
-
-        /* Extract PPID (first 16 bytes) and convert to hex */
-        for (int i = 0; i < 16; i++) {
-            sprintf(&g_platform_instance_id[i * 2], "%02x", cert_data[i]);
-        }
-        g_platform_instance_id[32]   = '\0';
-        g_platform_instance_id_valid = 1;
-
-        printf("[RA-TLS SO] (thread %ld) Platform instance ID (PPID): %s\n", (long)pthread_self(),
-               g_platform_instance_id);
-
-    } else if (data_type == 5) {
-        /* PCK certificate chain - extract SPKI fingerprint from leaf certificate */
-        /* Look for PEM certificate in cert_data - use actual_cert_data_size to match JavaScript */
-        const char* pem_start =
-            memmem(cert_data, actual_cert_data_size, "-----BEGIN CERTIFICATE-----", 27);
-
-        if (!pem_start) {
-            printf("[RA-TLS SO] No PEM certificate found in cert data type 5\n");
-            return;
-        }
-
-        /* Calculate remaining length from pem_start to end of actual cert_data */
-        size_t remaining_from_start = actual_cert_data_size - (pem_start - (const char*)cert_data);
-        const char* pem_end =
-            memmem(pem_start, remaining_from_start, "-----END CERTIFICATE-----", 25);
-        if (!pem_end) {
-            printf("[RA-TLS SO] Incomplete PEM certificate in cert data\n");
-            return;
-        }
-
-        pem_end += 25; /* Include the end marker */
-        size_t pem_len = pem_end - pem_start;
-
-#ifdef HAVE_MBEDTLS_HEADERS
-        /* Parse certificate using mbedTLS - copy to null-terminated buffer */
-        /* This ensures proper PEM parsing as mbedTLS expects null-terminated strings */
-        char* pem_buf = malloc(pem_len + 1);
-        if (!pem_buf) {
-            printf("[RA-TLS SO] Failed to allocate memory for PEM buffer\n");
-            return;
-        }
-        memcpy(pem_buf, pem_start, pem_len);
-        pem_buf[pem_len] = '\0';
-
-        mbedtls_x509_crt pck_cert;
-        mbedtls_x509_crt_init(&pck_cert);
-
-        int ret = mbedtls_x509_crt_parse(&pck_cert, (const unsigned char*)pem_buf, pem_len + 1);
-        free(pem_buf);
-
-        if (ret != 0) {
-            printf("[RA-TLS SO] Failed to parse PCK certificate: %d (0x%04x)\n", ret,
-                   (unsigned)(-ret & 0xFFFF));
-            mbedtls_x509_crt_free(&pck_cert);
-            return;
-        }
-
-        /* Extract SPKI (SubjectPublicKeyInfo) from certificate */
-        /* The pk field contains the public key, we need to write it to DER format */
-        unsigned char spki_der[512];
-        int spki_len = mbedtls_pk_write_pubkey_der(&pck_cert.pk, spki_der, sizeof(spki_der));
-
-        if (spki_len < 0) {
-            printf("[RA-TLS SO] Failed to write SPKI DER: %d\n", spki_len);
-            mbedtls_x509_crt_free(&pck_cert);
-            return;
-        }
-
-        /* mbedtls_pk_write_pubkey_der writes from the end of the buffer */
-        const unsigned char* spki_start = spki_der + sizeof(spki_der) - spki_len;
-
-        /* Compute SHA-256 hash of SPKI */
-        unsigned char sha256_hash[32];
-        mbedtls_sha256(spki_start, spki_len, sha256_hash, 0); /* 0 = SHA-256, not SHA-224 */
-
-        /* Convert to hex string */
-        for (int i = 0; i < 32; i++) {
-            sprintf(&g_platform_instance_id[i * 2], "%02x", sha256_hash[i]);
-        }
-        g_platform_instance_id[64]   = '\0';
-        g_platform_instance_id_valid = 1;
-
-        printf("[RA-TLS SO] (thread %ld) Extracted platform instance ID from PCK SPKI: %s\n",
-               (long)pthread_self(), g_platform_instance_id);
-
-        mbedtls_x509_crt_free(&pck_cert);
-#else
-        printf("[RA-TLS SO] mbedTLS headers not available, cannot extract PCK SPKI fingerprint\n");
-#endif
-    } else {
-        printf("[RA-TLS SO] Unsupported certification data type: %u\n", data_type);
-    }
-}
 
 /* Whitelist verification functions */
 static int parse_csv_line(const char* line, char** tokens, int max_tokens) {
@@ -1338,7 +1112,9 @@ static void print_hex(const char* label, const uint8_t* data, size_t len) {
  * Measurement verification callback
  */
 static int verify_measurements_callback(const char* mrenclave, const char* mrsigner,
-                                        const char* isv_prod_id, const char* isv_svn) {
+                                        const char* isv_prod_id, const char* isv_svn,
+                                        const char* platform_instance_id,
+                                        const uint8_t* cert_der, size_t cert_der_size) {
     printf("[RA-TLS SO] Verifying measurements:\n");
 
     /* Print measurements as hex (they are binary data, not strings) */
@@ -1350,11 +1126,16 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
     uint16_t svn     = *(const uint16_t*)isv_svn;
     printf("[RA-TLS SO]   ISV_PROD_ID: %u (0x%04x)\n", prod_id, prod_id);
     printf("[RA-TLS SO]   ISV_SVN:     %u (0x%04x)\n", svn, svn);
-    if (g_platform_instance_id_valid) {
-        printf("[RA-TLS SO]   Platform instance ID: %s\n", g_platform_instance_id);
+    
+    /* Print platform instance ID from callback parameter */
+    if (platform_instance_id && *platform_instance_id) {
+        printf("[RA-TLS SO]   Platform instance ID: %s\n", platform_instance_id);
     } else {
-        printf("[RA-TLS SO]   (thread %ld) Platform instance ID: <not available>\n", (long)pthread_self());
+        printf("[RA-TLS SO]   Platform instance ID: <not available>\n");
     }
+    
+    /* Print certificate DER info */
+    printf("[RA-TLS SO]   Certificate DER size: %zu bytes\n", cert_der_size);
 
     /* First, call user's callback if set */
     pthread_mutex_lock(&g_user_measurements_cb_mutex);
@@ -1363,7 +1144,8 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
 
     if (user_cb) {
         printf("[RA-TLS SO] Calling user measurement callback\n");
-        int user_result = user_cb(mrenclave, mrsigner, isv_prod_id, isv_svn);
+        int user_result = user_cb(mrenclave, mrsigner, isv_prod_id, isv_svn,
+                                  platform_instance_id, cert_der, cert_der_size);
         if (user_result != 0) {
             fprintf(stderr, "[RA-TLS SO] User measurement callback rejected by user callback: %d\n",
                     user_result);
@@ -1517,8 +1299,8 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
     sprintf(isv_svn_hex, "%04x", svn);
 
     /* Print platform instance ID if available */
-    if (g_platform_instance_id_valid) {
-        printf("[RA-TLS SO]   PLATFORM_INSTANCE_ID: %s\n", g_platform_instance_id);
+    if (platform_instance_id && *platform_instance_id) {
+        printf("[RA-TLS SO]   PLATFORM_INSTANCE_ID: %s\n", platform_instance_id);
     } else {
         printf("[RA-TLS SO]   PLATFORM_INSTANCE_ID: not available\n");
     }
@@ -1540,9 +1322,9 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
         if (platform_instance_id_count > 0 && i < platform_instance_id_count) {
             if (is_wildcard(platform_instance_id_tokens[i])) {
                 platform_instance_id_match = 1; /* Wildcard always matches */
-            } else if (g_platform_instance_id_valid) {
+            } else if (platform_instance_id && *platform_instance_id) {
                 platform_instance_id_match =
-                    hex_string_match(g_platform_instance_id, platform_instance_id_tokens[i]);
+                    hex_string_match(platform_instance_id, platform_instance_id_tokens[i]);
             } else {
                 /* Platform instance ID required but not available */
                 platform_instance_id_match = 0;
@@ -1613,37 +1395,6 @@ static int ratls_mbedtls_verify_callback(void* data, mbedtls_x509_crt* crt, int 
     }
 
 #ifdef HAVE_MBEDTLS_HEADERS
-    /* Extract platform instance ID from quote before running RA-TLS verification */
-    /* Use extract_quote_from_cert_der to properly parse the certificate DER */
-    const uint8_t* quote_data = NULL;
-    size_t quote_size         = 0;
-
-    if (extract_quote_from_cert_der(crt->raw.p, crt->raw.len, &quote_data, &quote_size) == 0) {
-        /* Successfully extracted quote from certificate (legacy or DICE OID) */
-        extract_platform_instance_id_from_quote(quote_data, quote_size);
-    } else {
-        printf(
-            "[RA-TLS SO] Neither legacy nor DICE OID found, platform instance ID extraction "
-            "skipped\n");
-
-        /* Dump certificate PEM for debugging */
-        uint8_t* pem_buf = NULL;
-        size_t pem_size  = 0;
-        if (der_to_pem(PEM_CERT_HEADER, PEM_CERT_FOOTER, (uint8_t*)crt->raw.p, crt->raw.len,
-                       &pem_buf, &pem_size) == 0) {
-            printf("[RA-TLS SO] Dumping certificate PEM for OID debugging:\n");
-            printf("----- RA-TLS DEBUG CERT START -----\n");
-            printf("%.*s", (int)pem_size, pem_buf);
-            printf("----- RA-TLS DEBUG CERT END -----\n");
-            free(pem_buf);
-        } else {
-            printf("[RA-TLS SO] Failed to convert certificate to PEM for debugging\n");
-        }
-    }
-
-    /* Run our RA-TLS verification (requires headers to access crt->raw) */
-    printf("[RA-TLS SO] (thread %ld) platform instance id valid:%d\n", (long)pthread_self(),
-           g_platform_instance_id_valid);
     *flags                                                        = 0;
     struct ra_tls_verify_callback_results verify_callback_results = {0};
     int ret =
@@ -1656,8 +1407,6 @@ static int ratls_mbedtls_verify_callback(void* data, mbedtls_x509_crt* crt, int 
     printf("[RA-TLS SO] RA-TLS verification succeeded (mbedTLS)\n");
     return 0;
 #else
-    /* Headers not available - cannot access crt->raw for RA-TLS verification */
-    fprintf(stderr, "[RA-TLS SO] mbedTLS headers not available, cannot run RA-TLS verification\n");
     fprintf(stderr,
             "[RA-TLS SO] Compile with -DHAVE_MBEDTLS_HEADERS to enable RA-TLS for mbedTLS\n");
     return -1;
@@ -1773,14 +1522,6 @@ static int ratls_openssl_verify_cb(int preverify_ok, X509_STORE_CTX* ctx) {
         return 0;
     }
 
-    /* Extract platform instance ID from quote before running RA-TLS verification */
-    const uint8_t* quote_data = NULL;
-    size_t quote_size         = 0;
-    if (extract_quote_from_cert_der(der, der_len, &quote_data, &quote_size) == 0) {
-        extract_platform_instance_id_from_quote(quote_data, quote_size);
-    } else {
-        printf("[RA-TLS SO] Could not extract quote from certificate (OpenSSL)\n");
-    }
 
     struct ra_tls_verify_callback_results verify_callback_results = {0};
     int ret = ra_tls_verify_callback_extended_der(der, der_len, &verify_callback_results);
@@ -1928,14 +1669,6 @@ static int ratls_wolfssl_verify_cb(int preverify_ok, void* ctx) {
         return 0;
     }
 
-    /* Extract platform instance ID from quote before running RA-TLS verification */
-    const uint8_t* quote_data = NULL;
-    size_t quote_size         = 0;
-    if (extract_quote_from_cert_der(der, der_len, &quote_data, &quote_size) == 0) {
-        extract_platform_instance_id_from_quote(quote_data, quote_size);
-    } else {
-        printf("[RA-TLS SO] Could not extract quote from certificate (wolfSSL)\n");
-    }
 
     struct ra_tls_verify_callback_results verify_callback_results = {0};
     int ret = ra_tls_verify_callback_extended_der(der, der_len, &verify_callback_results);
