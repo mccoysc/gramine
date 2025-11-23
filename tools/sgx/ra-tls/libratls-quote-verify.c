@@ -1714,6 +1714,9 @@ void ra_tls_set_measurement_callback(verify_measurements_cb_t f_cb) {
     pthread_mutex_lock(&g_user_measurements_cb_mutex);
     g_user_measurements_cb = f_cb;
     pthread_mutex_unlock(&g_user_measurements_cb_mutex);
+    
+    /* Always install our wrapper to ensure transparent RA-TLS verification */
+    real_ra_tls_set_measurement_callback(verify_measurements_callback);
 }
 
 /**
