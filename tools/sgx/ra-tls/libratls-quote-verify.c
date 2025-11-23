@@ -84,6 +84,9 @@ static void* (*wolfssl_X509_STORE_CTX_get_ex_data)(void* ctx, int idx) = NULL;
 static void* (*wolfssl_SSL_get_SSL_CTX)(void* ssl)                     = NULL;
 static int (*wolfssl_X509_STORE_CTX_get_error_depth)(void* ctx)        = NULL;
 
+/* Internal helper for resolving real dlsym without recursion */
+static void* ratls_real_dlsym(const char* symbol);
+
 /* Real dlopen/dlmopen function pointers */
 static void* (*real_dlopen)(const char* filename, int flags)             = NULL;
 static void* (*real_dlmopen)(long lmid, const char* filename, int flags) = NULL;
@@ -3036,9 +3039,6 @@ int dlclose(void* handle) {
     /* Now call the real dlclose */
     return real_dlclose(handle);
 }
-
-/* Forward declaration for internal dlsym helper */
-static void* ratls_real_dlsym(const char* symbol);
 
 /* Thread-local guard to prevent recursion when our own hooks call dlsym internally */
 static __thread int g_in_ratls_dlsym_lookup = 0;
