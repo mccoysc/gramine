@@ -349,7 +349,7 @@ class Manifest:
                 tmp_preload=preload.replace('file:', '')
             # set LD_PRELOAD
             manifest['loader']['env']['LD_PRELOAD'] = tmp_preload
-            if 'debug' in manifest['sgx'] and manifest['sgx']['debug']:
+            if 'debug' in manifest['sgx'] and manifest['sgx']['debug']=="true":
                 manifest['loader']['env']['RA_TLS_ALLOW_DEBUG_ENCLAVE_INSECURE'] = "true"
             manifest['loader']['env']['RATLS_ENABLE_VERIFY'] = "1"
             manifest['loader']['env']['RA_TLS_ALLOW_OUTDATED_TCB_INSECURE'] = "1"
