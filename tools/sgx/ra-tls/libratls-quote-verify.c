@@ -84,6 +84,9 @@ static void* (*wolfssl_X509_STORE_CTX_get_ex_data)(void* ctx, int idx) = NULL;
 static void* (*wolfssl_SSL_get_SSL_CTX)(void* ssl)                     = NULL;
 static int (*wolfssl_X509_STORE_CTX_get_error_depth)(void* ctx)        = NULL;
 
+/* Internal helper for resolving real dlsym without recursion */
+static void* ratls_real_dlsym(const char* symbol);
+
 /* Real dlopen/dlmopen function pointers */
 static void* (*real_dlopen)(const char* filename, int flags)             = NULL;
 static void* (*real_dlmopen)(long lmid, const char* filename, int flags) = NULL;
@@ -1693,7 +1696,7 @@ void ra_tls_set_measurement_callback(verify_measurements_cb_t f_cb) {
 
     /* Get the real function pointer on first call */
     if (!real_ra_tls_set_measurement_callback) {
-        real_ra_tls_set_measurement_callback = dlsym(RTLD_NEXT, "ra_tls_set_measurement_callback");
+        real_ra_tls_set_measurement_callback = ratls_real_dlsym("ra_tls_set_measurement_callback");
         if (!real_ra_tls_set_measurement_callback) {
             fprintf(stderr, "[RA-TLS SO] Failed to find real ra_tls_set_measurement_callback: %s\n",
                     dlerror());
@@ -1709,7 +1712,7 @@ void ra_tls_set_measurement_callback(verify_measurements_cb_t f_cb) {
         return;
     }
 
-    /* Otherwise, this is a user-provided callback - save it and install our wrapper */
+    /* Otherwise, this is a user-provided callback - save it */
     printf("[RA-TLS SO] Saving user measurement callback\n");
     pthread_mutex_lock(&g_user_measurements_cb_mutex);
     g_user_measurements_cb = f_cb;
@@ -1768,7 +1771,7 @@ void mbedtls_ssl_conf_verify(mbedtls_ssl_config* conf,
 int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int transport, int preset) {
     /* Resolve real function per-call using RTLD_NEXT */
     int (*real_func)(mbedtls_ssl_config*, int, int, int);
-    real_func = dlsym(RTLD_NEXT, "mbedtls_ssl_config_defaults");
+    real_func = ratls_real_dlsym("mbedtls_ssl_config_defaults");
 
     int ret = 0;
     if (real_func) {
@@ -1887,7 +1890,7 @@ void wolfSSL_set_verify(void* ssl, int mode, void* callback) {
 SSL_CTX* SSL_CTX_new(const void* method) {
     /* Resolve real function per-call using RTLD_NEXT */
     SSL_CTX* (*real_func)(const void*);
-    real_func = dlsym(RTLD_NEXT, "SSL_CTX_new");
+    real_func = ratls_real_dlsym("SSL_CTX_new");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -1933,7 +1936,7 @@ SSL_CTX* SSL_CTX_new(const void* method) {
 SSL* SSL_new(SSL_CTX* ctx) {
     /* Resolve real function per-call using RTLD_NEXT */
     SSL* (*real_func)(SSL_CTX*);
-    real_func = dlsym(RTLD_NEXT, "SSL_new");
+    real_func = ratls_real_dlsym("SSL_new");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -1981,7 +1984,7 @@ SSL* SSL_new(SSL_CTX* ctx) {
 int SSL_connect(SSL* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
     int (*real_func)(SSL*);
-    real_func = dlsym(RTLD_NEXT, "SSL_connect");
+    real_func = ratls_real_dlsym("SSL_connect");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2018,7 +2021,7 @@ int SSL_connect(SSL* ssl) {
 
         /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
         void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
-        real_set_verify = dlsym(RTLD_NEXT, "SSL_set_verify");
+        real_set_verify = ratls_real_dlsym("SSL_set_verify");
         if (!real_set_verify) {
             real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
         }
@@ -2044,7 +2047,7 @@ int SSL_connect(SSL* ssl) {
 int SSL_accept(SSL* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
     int (*real_func)(SSL*);
-    real_func = dlsym(RTLD_NEXT, "SSL_accept");
+    real_func = ratls_real_dlsym("SSL_accept");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2081,7 +2084,7 @@ int SSL_accept(SSL* ssl) {
 
         /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
         void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
-        real_set_verify = dlsym(RTLD_NEXT, "SSL_set_verify");
+        real_set_verify = ratls_real_dlsym("SSL_set_verify");
         if (!real_set_verify) {
             real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
         }
@@ -2107,7 +2110,7 @@ int SSL_accept(SSL* ssl) {
 int SSL_do_handshake(SSL* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
     int (*real_func)(SSL*);
-    real_func = dlsym(RTLD_NEXT, "SSL_do_handshake");
+    real_func = ratls_real_dlsym("SSL_do_handshake");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2144,7 +2147,7 @@ int SSL_do_handshake(SSL* ssl) {
 
         /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
         void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
-        real_set_verify = dlsym(RTLD_NEXT, "SSL_set_verify");
+        real_set_verify = ratls_real_dlsym("SSL_set_verify");
         if (!real_set_verify) {
             real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
         }
@@ -2170,7 +2173,7 @@ int SSL_do_handshake(SSL* ssl) {
 int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) {
     /* Resolve real function per-call using RTLD_NEXT */
     int (*real_func)(mbedtls_ssl_context*, const mbedtls_ssl_config*);
-    real_func = dlsym(RTLD_NEXT, "mbedtls_ssl_setup");
+    real_func = ratls_real_dlsym("mbedtls_ssl_setup");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2205,7 +2208,7 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
              */
             void (*real_conf_verify)(mbedtls_ssl_config*,
                                      int (*)(void*, mbedtls_x509_crt*, int, uint32_t*), void*);
-            real_conf_verify = dlsym(RTLD_NEXT, "mbedtls_ssl_conf_verify");
+            real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
             if (!real_conf_verify) {
                 real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
             }
@@ -2236,7 +2239,7 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
 int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
     int (*real_func)(mbedtls_ssl_context*);
-    real_func = dlsym(RTLD_NEXT, "mbedtls_ssl_handshake");
+    real_func = ratls_real_dlsym("mbedtls_ssl_handshake");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2264,7 +2267,7 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
 void* wolfSSL_CTX_new(void* method) {
     /* Resolve real function per-call using RTLD_NEXT */
     void* (*real_func)(void*);
-    real_func = dlsym(RTLD_NEXT, "wolfSSL_CTX_new");
+    real_func = ratls_real_dlsym("wolfSSL_CTX_new");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2316,7 +2319,7 @@ void* wolfSSL_CTX_new(void* method) {
 void* wolfSSL_new(void* ctx) {
     /* Resolve real function per-call using RTLD_NEXT */
     void* (*real_func)(void*);
-    real_func = dlsym(RTLD_NEXT, "wolfSSL_new");
+    real_func = ratls_real_dlsym("wolfSSL_new");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2379,7 +2382,7 @@ void* wolfSSL_new(void* ctx) {
 int wolfSSL_connect(void* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
     int (*real_func)(void*);
-    real_func = dlsym(RTLD_NEXT, "wolfSSL_connect");
+    real_func = ratls_real_dlsym("wolfSSL_connect");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2416,7 +2419,7 @@ int wolfSSL_connect(void* ssl) {
 
         /* Resolve real wolfSSL_set_verify function and call it directly (not our wrapper) */
         void (*real_set_verify)(void*, int, void*);
-        real_set_verify = dlsym(RTLD_NEXT, "wolfSSL_set_verify");
+        real_set_verify = ratls_real_dlsym("wolfSSL_set_verify");
         if (!real_set_verify) {
             real_set_verify = dlsym(RTLD_DEFAULT, "wolfSSL_set_verify");
         }
@@ -2442,7 +2445,7 @@ int wolfSSL_connect(void* ssl) {
 int wolfSSL_accept(void* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
     int (*real_func)(void*);
-    real_func = dlsym(RTLD_NEXT, "wolfSSL_accept");
+    real_func = ratls_real_dlsym("wolfSSL_accept");
 
     /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols (e.g., Node.js) */
     if (!real_func) {
@@ -2479,7 +2482,7 @@ int wolfSSL_accept(void* ssl) {
 
         /* Resolve real wolfSSL_set_verify function and call it directly (not our wrapper) */
         void (*real_set_verify)(void*, int, void*);
-        real_set_verify = dlsym(RTLD_NEXT, "wolfSSL_set_verify");
+        real_set_verify = ratls_real_dlsym("wolfSSL_set_verify");
         if (!real_set_verify) {
             real_set_verify = dlsym(RTLD_DEFAULT, "wolfSSL_set_verify");
         }
@@ -2511,7 +2514,7 @@ void SSL_CTX_free(SSL_CTX* ctx) {
 
     /* Resolve real function per-call using RTLD_NEXT */
     void (*real_func)(SSL_CTX*);
-    real_func = dlsym(RTLD_NEXT, "SSL_CTX_free");
+    real_func = ratls_real_dlsym("SSL_CTX_free");
 
     if (real_func) {
         real_func(ctx);
@@ -2529,7 +2532,7 @@ void SSL_free(SSL* ssl) {
 
     /* Resolve real function per-call using RTLD_NEXT */
     void (*real_func)(SSL*);
-    real_func = dlsym(RTLD_NEXT, "SSL_free");
+    real_func = ratls_real_dlsym("SSL_free");
 
     if (real_func) {
         real_func(ssl);
@@ -2547,7 +2550,7 @@ void mbedtls_ssl_config_free(mbedtls_ssl_config* conf) {
 
     /* Resolve real function per-call using RTLD_NEXT */
     void (*real_func)(mbedtls_ssl_config*);
-    real_func = dlsym(RTLD_NEXT, "mbedtls_ssl_config_free");
+    real_func = ratls_real_dlsym("mbedtls_ssl_config_free");
 
     if (real_func) {
         real_func(conf);
@@ -2565,7 +2568,7 @@ void mbedtls_ssl_free(mbedtls_ssl_context* ssl) {
 
     /* Resolve real function per-call using RTLD_NEXT */
     void (*real_func)(mbedtls_ssl_context*);
-    real_func = dlsym(RTLD_NEXT, "mbedtls_ssl_free");
+    real_func = ratls_real_dlsym("mbedtls_ssl_free");
 
     if (real_func) {
         real_func(ssl);
@@ -2583,7 +2586,7 @@ void wolfSSL_CTX_free(void* ctx) {
 
     /* Resolve real function per-call using RTLD_NEXT */
     void (*real_func)(void*);
-    real_func = dlsym(RTLD_NEXT, "wolfSSL_CTX_free");
+    real_func = ratls_real_dlsym("wolfSSL_CTX_free");
 
     if (real_func) {
         real_func(ctx);
@@ -2601,7 +2604,7 @@ void wolfSSL_free(void* ssl) {
 
     /* Resolve real function per-call using RTLD_NEXT */
     void (*real_func)(void*);
-    real_func = dlsym(RTLD_NEXT, "wolfSSL_free");
+    real_func = ratls_real_dlsym("wolfSSL_free");
 
     if (real_func) {
         real_func(ssl);
@@ -2614,7 +2617,7 @@ void wolfSSL_free(void* ssl) {
  */
 void* dlopen(const char* filename, int flags) {
     if (!real_dlopen) {
-        real_dlopen = dlsym(RTLD_NEXT, "dlopen");
+        real_dlopen = ratls_real_dlsym("dlopen");
         if (!real_dlopen) {
             fprintf(stderr, "[RA-TLS SO] Failed to resolve real dlopen\n");
             return NULL;
@@ -2648,7 +2651,7 @@ void* dlopen(const char* filename, int flags) {
  */
 void* dlmopen(long lmid, const char* filename, int flags) {
     if (!real_dlmopen) {
-        real_dlmopen = dlsym(RTLD_NEXT, "dlmopen");
+        real_dlmopen = ratls_real_dlsym("dlmopen");
         if (!real_dlmopen) {
             fprintf(stderr, "[RA-TLS SO] Failed to resolve real dlmopen\n");
             return NULL;
@@ -2945,7 +2948,7 @@ static void cleanup_callbacks_by_provenance(const char* so_path) {
  */
 int dlclose(void* handle) {
     if (!real_dlclose) {
-        real_dlclose = dlsym(RTLD_NEXT, "dlclose");
+        real_dlclose = ratls_real_dlsym("dlclose");
         if (!real_dlclose) {
             fprintf(stderr, "[RA-TLS SO] Failed to resolve real dlclose\n");
             return -1;
@@ -3035,6 +3038,139 @@ int dlclose(void* handle) {
 
     /* Now call the real dlclose */
     return real_dlclose(handle);
+}
+
+/* Thread-local guard to prevent recursion when our own hooks call dlsym internally */
+static __thread int g_in_ratls_dlsym_lookup = 0;
+
+/**
+ * Internal helper for libratls hooks to resolve real function pointers
+ * This sets a guard flag to prevent our dlsym hook from rewriting symbol names
+ * when we're looking up real implementations for our own use.
+ */
+static void* ratls_real_dlsym(const char* symbol) {
+    void* ptr;
+    g_in_ratls_dlsym_lookup++;
+    ptr = dlsym(RTLD_NEXT, symbol);
+    g_in_ratls_dlsym_lookup--;
+    return ptr;
+}
+
+/**
+ * Hook dlsym to intercept lookups for RA-TLS and TLS functions
+ * This ensures that even when applications use dlsym(handle, "function_name"),
+ * they get our hook version instead of the real implementation, maintaining transparent
+ * RA-TLS verification.
+ */
+void* dlsym(void* handle, const char* symbol) {
+    static void* (*real_dlsym)(void*, const char*) = NULL;
+    
+    /* Bootstrap: get real dlsym on first call */
+    if (!real_dlsym) {
+        /* Use dlvsym to get the real dlsym without recursion */
+        real_dlsym = (void* (*)(void*, const char*))dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.2.5");
+        if (!real_dlsym) {
+            fprintf(stderr, "[RA-TLS SO] Failed to find real dlsym\n");
+            return NULL;
+        }
+    }
+    
+    if (!symbol) {
+        return real_dlsym(handle, symbol);
+    }
+    
+    /* If this call originates from inside our own library while trying to resolve
+     * real functions, do NOT rewrite anything - pass through to real dlsym */
+    if (g_in_ratls_dlsym_lookup) {
+        return real_dlsym(handle, symbol);
+    }
+    
+    /* Intercept RA-TLS measurement callback setter */
+    if (strcmp(symbol, "ra_tls_set_measurement_callback") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)ra_tls_set_measurement_callback;
+    }
+    
+    /* Intercept mbedTLS functions */
+    if (strcmp(symbol, "mbedtls_ssl_conf_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)mbedtls_ssl_conf_verify;
+    }
+    if (strcmp(symbol, "mbedtls_ssl_config_defaults") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)mbedtls_ssl_config_defaults;
+    }
+    if (strcmp(symbol, "mbedtls_ssl_setup") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)mbedtls_ssl_setup;
+    }
+    if (strcmp(symbol, "mbedtls_ssl_handshake") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)mbedtls_ssl_handshake;
+    }
+    
+    /* Intercept OpenSSL functions */
+    if (strcmp(symbol, "SSL_CTX_set_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_CTX_set_verify;
+    }
+    if (strcmp(symbol, "SSL_set_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_set_verify;
+    }
+    if (strcmp(symbol, "SSL_CTX_set_cert_verify_callback") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_CTX_set_cert_verify_callback;
+    }
+    if (strcmp(symbol, "SSL_CTX_new") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_CTX_new;
+    }
+    if (strcmp(symbol, "SSL_new") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_new;
+    }
+    if (strcmp(symbol, "SSL_connect") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_connect;
+    }
+    if (strcmp(symbol, "SSL_accept") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_accept;
+    }
+    if (strcmp(symbol, "SSL_do_handshake") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_do_handshake;
+    }
+    
+    /* Intercept wolfSSL functions */
+    if (strcmp(symbol, "wolfSSL_CTX_set_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_CTX_set_verify;
+    }
+    if (strcmp(symbol, "wolfSSL_set_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_set_verify;
+    }
+    if (strcmp(symbol, "wolfSSL_CTX_new") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_CTX_new;
+    }
+    if (strcmp(symbol, "wolfSSL_new") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_new;
+    }
+    if (strcmp(symbol, "wolfSSL_connect") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_connect;
+    }
+    if (strcmp(symbol, "wolfSSL_accept") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_accept;
+    }
+    
+    /* Pass through all other symbols */
+    return real_dlsym(handle, symbol);
 }
 
 /**
