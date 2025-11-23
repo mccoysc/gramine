@@ -3038,6 +3038,127 @@ int dlclose(void* handle) {
 }
 
 /**
+ * Hook dlsym to intercept lookups for RA-TLS and TLS functions
+ * This ensures that even when applications use dlsym(handle, "function_name"),
+ * they get our hook version instead of the real implementation, maintaining transparent
+ * RA-TLS verification.
+ */
+void* dlsym(void* handle, const char* symbol) {
+    static void* (*real_dlsym)(void*, const char*) = NULL;
+    
+    /* Bootstrap: get real dlsym on first call */
+    if (!real_dlsym) {
+        /* Use dlvsym to get the real dlsym without recursion */
+        real_dlsym = (void* (*)(void*, const char*))dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.2.5");
+        if (!real_dlsym) {
+            /* Fallback for systems without dlvsym or different glibc version */
+            void* libdl = dlopen("libdl.so.2", RTLD_LAZY);
+            if (!libdl) {
+                libdl = dlopen("libdl.so", RTLD_LAZY);
+            }
+            if (libdl) {
+                real_dlsym = (void* (*)(void*, const char*))dlvsym(libdl, "dlsym", "GLIBC_2.2.5");
+            }
+        }
+        if (!real_dlsym) {
+            fprintf(stderr, "[RA-TLS SO] Failed to find real dlsym\n");
+            return NULL;
+        }
+    }
+    
+    if (!symbol) {
+        return real_dlsym(handle, symbol);
+    }
+    
+    /* Intercept RA-TLS measurement callback setter */
+    if (strcmp(symbol, "ra_tls_set_measurement_callback") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)ra_tls_set_measurement_callback;
+    }
+    
+    /* Intercept mbedTLS functions */
+    if (strcmp(symbol, "mbedtls_ssl_conf_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)mbedtls_ssl_conf_verify;
+    }
+    if (strcmp(symbol, "mbedtls_ssl_config_defaults") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)mbedtls_ssl_config_defaults;
+    }
+    if (strcmp(symbol, "mbedtls_ssl_setup") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)mbedtls_ssl_setup;
+    }
+    if (strcmp(symbol, "mbedtls_ssl_handshake") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)mbedtls_ssl_handshake;
+    }
+    
+    /* Intercept OpenSSL functions */
+    if (strcmp(symbol, "SSL_CTX_set_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_CTX_set_verify;
+    }
+    if (strcmp(symbol, "SSL_set_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_set_verify;
+    }
+    if (strcmp(symbol, "SSL_CTX_set_cert_verify_callback") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_CTX_set_cert_verify_callback;
+    }
+    if (strcmp(symbol, "SSL_CTX_new") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_CTX_new;
+    }
+    if (strcmp(symbol, "SSL_new") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_new;
+    }
+    if (strcmp(symbol, "SSL_connect") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_connect;
+    }
+    if (strcmp(symbol, "SSL_accept") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_accept;
+    }
+    if (strcmp(symbol, "SSL_do_handshake") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_do_handshake;
+    }
+    
+    /* Intercept wolfSSL functions */
+    if (strcmp(symbol, "wolfSSL_CTX_set_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_CTX_set_verify;
+    }
+    if (strcmp(symbol, "wolfSSL_set_verify") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_set_verify;
+    }
+    if (strcmp(symbol, "wolfSSL_CTX_new") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_CTX_new;
+    }
+    if (strcmp(symbol, "wolfSSL_new") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_new;
+    }
+    if (strcmp(symbol, "wolfSSL_connect") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_connect;
+    }
+    if (strcmp(symbol, "wolfSSL_accept") == 0) {
+        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)wolfSSL_accept;
+    }
+    
+    /* Pass through all other symbols */
+    return real_dlsym(handle, symbol);
+}
+
+/**
  * Constructor: Initialize the SO library
  */
 __attribute__((constructor)) static void ratls_quota_init(void) {
