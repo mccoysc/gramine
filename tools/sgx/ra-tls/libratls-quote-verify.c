@@ -859,67 +859,6 @@ static int extract_quote_from_dice_cbor(const uint8_t* cbor_data, size_t cbor_si
 }
 
 /**
- * Helper function to find OID in certificate extensions
- * Simplified version based on gramine's find_oid_in_cert_extensions
- */
-static int find_oid_in_extensions(const uint8_t* exts, size_t exts_size, const uint8_t* oid,
-                                  size_t oid_size, const uint8_t** out_data, size_t* out_size) {
-    const uint8_t* ptr = exts;
-    const uint8_t* end = exts + exts_size;
-
-    while (ptr < end) {
-        /* Simple ASN.1 parsing - look for SEQUENCE tag */
-        if (ptr + 2 > end || *ptr != 0x30) {
-            ptr++;
-            continue;
-        }
-
-        /* Check if OID matches */
-        if (ptr + oid_size <= end && memcmp(ptr + 2, oid, oid_size) == 0) {
-            /* Found the OID, now find the OCTET STRING with the data */
-            const uint8_t* data_ptr = ptr + 2 + oid_size;
-
-            /* Skip to OCTET STRING (tag 0x04) */
-            while (data_ptr < end && *data_ptr != 0x04) {
-                data_ptr++;
-            }
-
-            if (data_ptr + 2 > end) {
-                return -1;
-            }
-
-            data_ptr++; /* Skip tag */
-
-            /* Parse length */
-            size_t len = *data_ptr++;
-            if (len & 0x80) {
-                /* Long form length */
-                size_t num_bytes = len & 0x7F;
-                if (data_ptr + num_bytes > end) {
-                    return -1;
-                }
-                len = 0;
-                for (size_t i = 0; i < num_bytes; i++) {
-                    len = (len << 8) | *data_ptr++;
-                }
-            }
-
-            if (data_ptr + len > end) {
-                return -1;
-            }
-
-            *out_data = data_ptr;
-            *out_size = len;
-            return 0;
-        }
-
-        ptr++;
-    }
-
-    return -1;
-}
-
-/**
  * Helper function to extract quote from DER-encoded certificate
  * Tries both legacy OID and DICE OID
  */
