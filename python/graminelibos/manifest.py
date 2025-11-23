@@ -359,6 +359,15 @@ class Manifest:
             manifest['fs']['mounts'].append({'uri': preload,  'path': tmp_preload})
             manifest['fs']['mounts'].append({'type':'tmpfs',  'path': '/tmp'})
 
+            if not 'sys' in manifest:
+                manifest['sys'] = {}
+            if not 'enable_extra_runtime_domain_names_conf' in manifest['sys']:
+                manifest['sys']['enable_extra_runtime_domain_names_conf'] = True
+            
+            if not 'allowed_files' in manifest['sgx']:
+                manifest['sgx']['allowed_files'] = []
+            manifest['sgx']['allowed_files'].append('file:/etc/')
+
         trusted_files = []
         for tf in sgx['trusted_files']:
             if isinstance(tf, dict) and 'uri' in tf:
