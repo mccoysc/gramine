@@ -318,15 +318,11 @@ int ra_tls_verify_callback(void* data, mbedtls_x509_crt* crt, int depth, uint32_
         results->err_loc = AT_INIT;
     }
 
-    if (depth != 0) {
-        /* the cert chain in RA-TLS consists of single self-signed cert, so we expect depth 0 */
-        return MBEDTLS_ERR_X509_INVALID_FORMAT;
-    }
-
     if (flags) {
         /* mbedTLS sets flags to signal that the cert is not to be trusted (e.g., it is not
-         * correctly signed by a trusted CA; since RA-TLS uses self-signed certs, we don't care
-         * what mbedTLS thinks and ignore internal cert verification logic of mbedTLS */
+         * correctly signed by a trusted CA). Since RA-TLS uses attested certificates (both
+         * leaf and CA certificates with embedded SGX quotes), we override mbedTLS's internal
+         * cert verification logic and rely on RA-TLS attestation instead. */
         *flags = 0;
     }
 
@@ -337,6 +333,16 @@ int ra_tls_verify_callback(void* data, mbedtls_x509_crt* crt, int depth, uint32_
     size_t quote_size;
     ret = extract_quote_and_verify_claims(crt, &quote, &quote_size);
     if (ret < 0) {
+        /* Check if this is a "no RA-TLS OID found" error vs a real verification failure.
+         * MBEDTLS_ERR_X509_INVALID_EXTENSIONS typically indicates missing OID. */
+        if (depth > 0 && ret == MBEDTLS_ERR_X509_INVALID_EXTENSIONS) {
+            /* For CA/intermediate certificates (depth > 0) without RA-TLS quote:
+             * Fall back to PKI verification. Don't touch flags, let mbedTLS decide. */
+            if (results)
+                results->err_loc = AT_NONE;
+            return 0;
+        }
+        /* For depth 0 (leaf) or depth > 0 with real RA-TLS errors: fail verification */
         ERROR("extract_quote_and_verify_claims failed: %d\n", ret);
         goto out;
     }

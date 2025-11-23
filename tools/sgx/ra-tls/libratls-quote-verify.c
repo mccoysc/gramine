@@ -1383,7 +1383,7 @@ static int ratls_mbedtls_verify_callback(void* data, mbedtls_x509_crt* crt, int 
     pthread_mutex_unlock(&g_mbedtls_callback_mutex);
 
     /* If OFF: call user callback and return user's result */
-    if (!enabled || depth != 0) {
+    if (!enabled) {
         if (entry && entry->verify_callback) {
             return entry->verify_callback(entry->verify_p, crt, depth, flags);
         }
@@ -1391,22 +1391,34 @@ static int ratls_mbedtls_verify_callback(void* data, mbedtls_x509_crt* crt, int 
         return 0;
     }
 
-    /* If ON: call user callback (ignore result), then do RA-TLS verification */
+    /* If ON: call user callback (ignore result), then try RA-TLS verification */
     if (entry && entry->verify_callback) {
         uint32_t user_flags = *flags;
         (void)entry->verify_callback(entry->verify_p, crt, depth, &user_flags);
     }
 
 #ifdef HAVE_MBEDTLS_HEADERS
-    *flags                                                        = 0;
     struct ra_tls_verify_callback_results verify_callback_results = {0};
     int ret =
         ra_tls_verify_callback_extended_der(crt->raw.p, crt->raw.len, &verify_callback_results);
+    
+    /* Check if this is a "no RA-TLS OID found" error for depth > 0 certificates */
+    if (ret == MBEDTLS_ERR_X509_INVALID_EXTENSIONS && depth > 0) {
+        /* For CA/intermediate certificates (depth > 0) without RA-TLS quote:
+         * Fall back to PKI verification. Don't touch flags, let mbedTLS decide. */
+        if (entry && entry->verify_callback) {
+            return entry->verify_callback(entry->verify_p, crt, depth, flags);
+        }
+        return 0;
+    }
+    
     if (ret < 0) {
         fprintf(stderr, "[RA-TLS SO] RA-TLS verification failed: %d\n", ret);
         return -1;
     }
 
+    /* RA-TLS succeeded for this cert (leaf or CA with quote): override PKI flags */
+    *flags = 0;
     printf("[RA-TLS SO] RA-TLS verification succeeded (mbedTLS)\n");
     return 0;
 #else
@@ -1475,8 +1487,8 @@ static int ratls_openssl_verify_cb(int preverify_ok, X509_STORE_CTX* ctx) {
     }
     pthread_mutex_unlock(&g_openssl_callback_mutex);
 
-    /* If OFF or non-first certificate: call user callback and return user's result */
-    if (!enabled || depth != 0) {
+    /* If OFF: call user callback and return user's result */
+    if (!enabled) {
         if (entry && entry->verify_callback) {
             return entry->verify_callback(preverify_ok, ctx);
         }
@@ -1484,7 +1496,7 @@ static int ratls_openssl_verify_cb(int preverify_ok, X509_STORE_CTX* ctx) {
         return preverify_ok;
     }
 
-    /* If ON: call user callback (ignore result), then do RA-TLS verification */
+    /* If ON: call user callback (ignore result), then try RA-TLS verification */
     if (entry && entry->verify_callback) {
         (void)entry->verify_callback(preverify_ok, ctx);
     }
@@ -1525,16 +1537,26 @@ static int ratls_openssl_verify_cb(int preverify_ok, X509_STORE_CTX* ctx) {
         return 0;
     }
 
-
     struct ra_tls_verify_callback_results verify_callback_results = {0};
     int ret = ra_tls_verify_callback_extended_der(der, der_len, &verify_callback_results);
     free(der);
+
+    /* Check if this is a "no RA-TLS OID found" error for depth > 0 certificates */
+    if (ret == MBEDTLS_ERR_X509_INVALID_EXTENSIONS && depth > 0) {
+        /* For CA/intermediate certificates (depth > 0) without RA-TLS quote:
+         * Fall back to PKI verification. Return preverify_ok. */
+        if (entry && entry->verify_callback) {
+            return entry->verify_callback(preverify_ok, ctx);
+        }
+        return preverify_ok;
+    }
 
     if (ret < 0) {
         fprintf(stderr, "[RA-TLS SO] RA-TLS verification failed: %d\n", ret);
         return 0;
     }
 
+    /* RA-TLS succeeded for this cert (leaf or CA with quote): override PKI result */
     openssl_X509_STORE_CTX_set_error(ctx, 0);
     printf("[RA-TLS SO] RA-TLS verification succeeded (OpenSSL)\n");
     return 1;
@@ -1617,8 +1639,8 @@ static int ratls_wolfssl_verify_cb(int preverify_ok, void* ctx) {
     }
     pthread_mutex_unlock(&g_wolfssl_callback_mutex);
 
-    /* If OFF or non-first certificate: call user callback and return user's result */
-    if (!enabled || depth != 0) {
+    /* If OFF: call user callback and return user's result */
+    if (!enabled) {
         if (entry && entry->verify_callback) {
             typedef int (*wolfssl_verify_cb_t)(int, void*);
             wolfssl_verify_cb_t user_cb = (wolfssl_verify_cb_t)entry->verify_callback;
@@ -1628,7 +1650,7 @@ static int ratls_wolfssl_verify_cb(int preverify_ok, void* ctx) {
         return preverify_ok;
     }
 
-    /* If ON: call user callback (ignore result), then do RA-TLS verification */
+    /* If ON: call user callback (ignore result), then try RA-TLS verification */
     if (entry && entry->verify_callback) {
         typedef int (*wolfssl_verify_cb_t)(int, void*);
         wolfssl_verify_cb_t user_cb = (wolfssl_verify_cb_t)entry->verify_callback;
@@ -1672,16 +1694,28 @@ static int ratls_wolfssl_verify_cb(int preverify_ok, void* ctx) {
         return 0;
     }
 
-
     struct ra_tls_verify_callback_results verify_callback_results = {0};
     int ret = ra_tls_verify_callback_extended_der(der, der_len, &verify_callback_results);
     free(der);
+
+    /* Check if this is a "no RA-TLS OID found" error for depth > 0 certificates */
+    if (ret == MBEDTLS_ERR_X509_INVALID_EXTENSIONS && depth > 0) {
+        /* For CA/intermediate certificates (depth > 0) without RA-TLS quote:
+         * Fall back to PKI verification. Return preverify_ok. */
+        if (entry && entry->verify_callback) {
+            typedef int (*wolfssl_verify_cb_t)(int, void*);
+            wolfssl_verify_cb_t user_cb = (wolfssl_verify_cb_t)entry->verify_callback;
+            return user_cb(preverify_ok, ctx);
+        }
+        return preverify_ok;
+    }
 
     if (ret < 0) {
         fprintf(stderr, "[RA-TLS SO] RA-TLS verification failed: %d\n", ret);
         return 0;
     }
 
+    /* RA-TLS succeeded for this cert (leaf or CA with quote): override PKI result */
     wolfssl_X509_STORE_CTX_set_error(ctx, 0);
     printf("[RA-TLS SO] RA-TLS verification succeeded (wolfSSL)\n");
     return 1;
