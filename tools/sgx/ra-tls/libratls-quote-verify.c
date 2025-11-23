@@ -3037,6 +3037,9 @@ int dlclose(void* handle) {
     return real_dlclose(handle);
 }
 
+/* Forward declaration for internal dlsym helper */
+static void* ratls_real_dlsym(const char* symbol);
+
 /* Thread-local guard to prevent recursion when our own hooks call dlsym internally */
 static __thread int g_in_ratls_dlsym_lookup = 0;
 
