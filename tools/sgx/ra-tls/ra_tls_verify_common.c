@@ -553,8 +553,7 @@ int extract_quote_and_verify_claims(mbedtls_x509_crt* crt, sgx_quote_t** out_quo
     return extract_legacy_quote_and_verify_pubkey(crt, out_quote, out_quote_size);
 }
 
-void ra_tls_set_measurement_callback(int (*f_cb)(const char* mrenclave, const char* mrsigner,
-                                                 const char* isv_prod_id, const char* isv_svn)) {
+void ra_tls_set_measurement_callback(verify_measurements_cb_t f_cb) {
     g_verify_measurements_cb = f_cb;
 }
 
