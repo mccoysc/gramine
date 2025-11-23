@@ -1291,13 +1291,101 @@ out:
     return ret;
 }
 
-static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, uint8_t** crt_der,
-                              size_t* crt_der_size) {
+/* Legacy function: generates a self-signed certificate with default parameters (SECP384R1 key)
+ * This is the original behavior before JSON/CA/file loading features were added */
+static int create_key_and_crt_legacy(mbedtls_pk_context* key, mbedtls_x509_crt* crt, uint8_t** crt_der,
+                                     size_t* crt_der_size) {
+    int ret;
+
+    if (!key || (!crt && !(crt_der && crt_der_size))) {
+        return MBEDTLS_ERR_X509_FATAL_ERROR;
+    }
+
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_ctr_drbg_init(&ctr_drbg);
+
+    mbedtls_entropy_context entropy;
+    mbedtls_entropy_init(&entropy);
+
+    mbedtls_x509write_cert writecrt;
+    mbedtls_x509write_crt_init(&writecrt);
+
+    uint8_t* crt_der_buf = NULL;
+    uint8_t* output_buf = NULL;
+    size_t output_buf_size = 16 * 1024;
+
+    output_buf = malloc(output_buf_size);
+    if (!output_buf) {
+        ret = MBEDTLS_ERR_X509_ALLOC_FAILED;
+        goto out;
+    }
+
+    ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, /*custom=*/NULL,
+                                /*customlen=*/0);
+    if (ret < 0)
+        goto out;
+
+    /* Generate default SECP384R1 EC key */
+    ret = mbedtls_pk_setup(key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+    if (ret < 0)
+        goto out;
+
+    ret = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP384R1, mbedtls_pk_ec(*key), mbedtls_ctr_drbg_random,
+                              &ctr_drbg);
+    if (ret < 0)
+        goto out;
+
+    /* Create self-signed certificate with default parameters */
+    ret = create_x509(key, &writecrt, /*ca_key=*/NULL, /*ca_subject=*/NULL, 
+                     /*subject=*/NULL, /*not_before=*/NULL, /*not_after=*/NULL, 
+                     MBEDTLS_MD_SHA256, /*is_ca=*/false);
+    if (ret < 0)
+        goto out;
+
+    int size = mbedtls_x509write_crt_der(&writecrt, output_buf, output_buf_size,
+                                         mbedtls_ctr_drbg_random, &ctr_drbg);
+    if (size < 0) {
+        ret = size;
+        goto out;
+    }
+
+    if (crt_der && crt_der_size) {
+        crt_der_buf = malloc(size);
+        if (!crt_der_buf) {
+            ret = MBEDTLS_ERR_X509_ALLOC_FAILED;
+            goto out;
+        }
+
+        memcpy(crt_der_buf, output_buf + output_buf_size - size, size);
+        *crt_der      = crt_der_buf;
+        *crt_der_size = size;
+    }
+
+    if (crt) {
+        ret = mbedtls_x509_crt_parse_der(crt, output_buf + output_buf_size - size, size);
+        if (ret < 0)
+            goto out;
+    }
+
+    ret = 0;
+out:
+    if (ret < 0) {
+        free(crt_der_buf);
+    }
+    mbedtls_x509write_crt_free(&writecrt);
+    mbedtls_entropy_free(&entropy);
+    mbedtls_ctr_drbg_free(&ctr_drbg);
+    free(output_buf);
+    return ret;
+}
+
+/* Enhanced function: supports JSON config, file loading, CA certificates, etc.
+ * This contains all the newly added features */
+static int create_key_and_crt_enhanced(mbedtls_pk_context* key, mbedtls_x509_crt* crt, uint8_t** crt_der,
+                                       size_t* crt_der_size) {
     int ret=0;
 
     if (!key || (!crt && !(crt_der && crt_der_size))) {
-        /* mbedTLS API (ra_tls_create_key_and_crt) and generic API (ra_tls_create_key_and_crt_der)
-         * both use `key`, but the former uses `crt` and the latter uses `crt_der` */
         return MBEDTLS_ERR_X509_FATAL_ERROR;
     }
 
@@ -2106,6 +2194,52 @@ out:
     mbedtls_entropy_free(&entropy);
     mbedtls_ctr_drbg_free(&ctr_drbg);
     free(output_buf);
+    return ret;
+}
+
+/* Wrapper function: tries enhanced logic first, falls back to legacy on failure
+ * This ensures backward compatibility - if new features fail, original functionality still works */
+static int create_key_and_crt(mbedtls_pk_context* key, mbedtls_x509_crt* crt, uint8_t** crt_der,
+                              size_t* crt_der_size) {
+    int ret;
+
+    /* Check if any enhanced configuration is present */
+    const char* algo_env = getenv(RA_TLS_CERT_ALGORITHM);
+    const char* config_b64 = getenv(RA_TLS_CERT_CONFIG_B64);
+    bool using_enhanced = (algo_env || config_b64);
+
+    if (using_enhanced) {
+        printf("RA-TLS: Enhanced configuration detected, attempting enhanced certificate generation\n");
+        ret = create_key_and_crt_enhanced(key, crt, crt_der, crt_der_size);
+        if (ret == 0) {
+            printf("RA-TLS: Enhanced certificate generation succeeded\n");
+            return 0;
+        }
+
+        /* Enhanced logic failed: log and fall back to legacy */
+        printf("RA-TLS: ========== ENHANCED CERTIFICATE GENERATION FAILED ==========\n");
+        printf("RA-TLS: Enhanced certificate generation failed (ret=%d)\n", ret);
+        printf("RA-TLS: Falling back to legacy self-signed certificate generation\n");
+        printf("RA-TLS: ===============================================================\n");
+
+        /* Clean up context before fallback */
+        mbedtls_pk_free(key);
+        mbedtls_pk_init(key);
+        if (crt) {
+            mbedtls_x509_crt_free(crt);
+            mbedtls_x509_crt_init(crt);
+        }
+        /* Note: crt_der is allocated inside the functions, no need to free here */
+    }
+
+    /* Legacy fallback path - always try this if no enhanced config or if enhanced failed */
+    printf("RA-TLS: Using legacy self-signed certificate generation (SECP384R1 key)\n");
+    ret = create_key_and_crt_legacy(key, crt, crt_der, crt_der_size);
+    if (ret == 0) {
+        printf("RA-TLS: Legacy certificate generation succeeded\n");
+    } else {
+        printf("RA-TLS: ERROR: Legacy certificate generation failed (ret=%d)\n", ret);
+    }
     return ret;
 }
 

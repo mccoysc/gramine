@@ -295,7 +295,7 @@ static void remove_openssl_ssl_callback(void* ssl) {
 }
 
 /* mbedTLS callback map helpers */
-static mbedtls_callback_entry_t* find_mbedtls_callback(void* conf) {
+static mbedtls_callback_entry_t* find_mbedtls_callback(const void* conf) {
     for (size_t i = 0; i < g_mbedtls_count; i++) {
         if (g_mbedtls_callbacks[i].key == conf) {
             return &g_mbedtls_callbacks[i];
@@ -688,7 +688,7 @@ static int generate_ratls_credentials(void) {
         size_t quote_size         = 0;
         if (extract_quote_from_cert_der(crt_der, crt_der_size, &quote_data, &quote_size) == 0) {
             extract_platform_instance_id_from_quote(quote_data, quote_size);
-            printf("[RA-TLS SO] (thread %d)g_platform_instance_id_valid:%d\n",g_platform_instance_id_valid);
+            printf("[RA-TLS SO] (thread %ld) g_platform_instance_id_valid:%d\n", (long)pthread_self(), g_platform_instance_id_valid);
         } else {
             printf("[RA-TLS SO] Could not extract quote from certificate (OpenSSL)\n");
         }
@@ -735,11 +735,7 @@ err:
     return -1;
 }
 
-/* RA-TLS OID definitions for quote extraction */
-#define NON_STANDARD_INTEL_SGX_QUOTE_OID \
-    {0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF8, 0x4D, 0x8A, 0x39, 0x06}
-
-#define TCG_DICE_TAGGED_EVIDENCE_OID_RAW {0x06, 0x06, 0x67, 0x81, 0x05, 0x05, 0x04, 0x09}
+/* RA-TLS OID definitions are in ra_tls.h - no need to redefine them here */
 
 /**
  * Minimal CBOR parser to extract quote from TCG DICE tagged evidence
@@ -1185,7 +1181,7 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         g_platform_instance_id[32]   = '\0';
         g_platform_instance_id_valid = 1;
 
-        printf("[RA-TLS SO] (thread %d)Platform instance ID (PPID): %s\n", pthread_self(),
+        printf("[RA-TLS SO] (thread %ld) Platform instance ID (PPID): %s\n", (long)pthread_self(),
                g_platform_instance_id);
 
     } else if (data_type == 5) {
@@ -1260,8 +1256,8 @@ static void extract_platform_instance_id_from_quote(const uint8_t* quote_data, s
         g_platform_instance_id[64]   = '\0';
         g_platform_instance_id_valid = 1;
 
-        printf("[RA-TLS SO] (thred %d)Extracted platform instance ID from PCK SPKI: %s\n",
-               pthread_self(), g_platform_instance_id);
+        printf("[RA-TLS SO] (thread %ld) Extracted platform instance ID from PCK SPKI: %s\n",
+               (long)pthread_self(), g_platform_instance_id);
 
         mbedtls_x509_crt_free(&pck_cert);
 #else
@@ -1357,7 +1353,7 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
     if (g_platform_instance_id_valid) {
         printf("[RA-TLS SO]   Platform instance ID: %s\n", g_platform_instance_id);
     } else {
-        printf("[RA-TLS SO]   (thread %d)Platform instance ID: <not available>\n", pthread_self());
+        printf("[RA-TLS SO]   (thread %ld) Platform instance ID: <not available>\n", (long)pthread_self());
     }
 
     /* First, call user's callback if set */
@@ -1646,7 +1642,7 @@ static int ratls_mbedtls_verify_callback(void* data, mbedtls_x509_crt* crt, int 
     }
 
     /* Run our RA-TLS verification (requires headers to access crt->raw) */
-    printf("[RA-TLS SO] (thread %d)platform instance id valid:%d\n", pthread_self(),
+    printf("[RA-TLS SO] (thread %ld) platform instance id valid:%d\n", (long)pthread_self(),
            g_platform_instance_id_valid);
     *flags                                                        = 0;
     struct ra_tls_verify_callback_results verify_callback_results = {0};
