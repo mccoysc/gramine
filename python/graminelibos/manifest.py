@@ -350,6 +350,10 @@ class Manifest:
             # set LD_PRELOAD
             manifest['loader']['env']['LD_PRELOAD'] = tmp_preload
             manifest['loader']['env']['RATLS_ENABLE_VERIFY'] = "1"
+            manifest['loader']['env']['RA_TLS_ALLOW_DEBUG_ENCLAVE_INSECURE'] = "1"
+            manifest['loader']['env']['RA_TLS_ALLOW_OUTDATED_TCB_INSECURE'] = "1"
+            manifest['loader']['env']['RA_TLS_ALLOW_HW_CONFIG_NEEDED'] = "1"
+            manifest['loader']['env']['RA_TLS_ALLOW_SW_HARDENING_NEEDED'] = "1"
 
             # add mount point for preload in fs.mount
             if not 'fs' in manifest:
@@ -358,15 +362,15 @@ class Manifest:
                 manifest['fs']['mounts'] = []
             manifest['fs']['mounts'].append({'uri': preload,  'path': tmp_preload})
             manifest['fs']['mounts'].append({'type':'tmpfs',  'path': '/tmp'})
+            manifest['fs']['mounts'].append({'uri':'file:/etc',  'path': '/etc'})
 
             if not 'sys' in manifest:
                 manifest['sys'] = {}
-            if not 'enable_extra_runtime_domain_names_conf' in manifest['sys']:
-                manifest['sys']['enable_extra_runtime_domain_names_conf'] = True
+            manifest['sys']['enable_extra_runtime_domain_names_conf'] = True
             
             if not 'allowed_files' in manifest['sgx']:
                 manifest['sgx']['allowed_files'] = []
-            manifest['sgx']['allowed_files'].append('file:/etc/')
+            manifest['sgx']['allowed_files'].append('file:/etc')
 
         trusted_files = []
         for tf in sgx['trusted_files']:
