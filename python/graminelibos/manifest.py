@@ -372,6 +372,7 @@ class Manifest:
             if not 'allowed_files' in manifest['sgx']:
                 manifest['sgx']['allowed_files'] = []
             manifest['sgx']['allowed_files'].append('file:/etc')
+            manifest['sgx']['remote_attestation']="dcap"
 
         trusted_files = []
         for tf in sgx['trusted_files']:
