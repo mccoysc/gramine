@@ -1740,6 +1740,7 @@ void mbedtls_ssl_conf_verify(mbedtls_ssl_config* conf,
 /**
  * mbedTLS: Intercept mbedtls_ssl_config_defaults
  * Resolves real function per-call using RTLD_NEXT for correct dispatch
+ * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
  */
 int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int transport, int preset) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -1754,6 +1755,23 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int tran
                 "[RA-TLS SO] Intercepted mbedtls_ssl_config_defaults, installing RA-TLS "
                 "callback\n");
             mbedtls_ssl_conf_verify(conf, ratls_mbedtls_verify_callback, NULL);
+
+            /* Set authmode based on environment variable for mutual authentication */
+            /* This is consistent with OpenSSL and wolfSSL implementations */
+            void (*real_conf_authmode)(mbedtls_ssl_config*, int);
+            real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
+            if (!real_conf_authmode) {
+                real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+            }
+            if (real_conf_authmode) {
+                /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
+                int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
+                if (is_require_peer_cert_enabled()) {
+                    authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
+                    printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
+                }
+                real_conf_authmode(conf, authmode);
+            }
         }
     }
     return ret;
@@ -2142,6 +2160,7 @@ int SSL_do_handshake(SSL* ssl) {
 /**
  * mbedTLS: Intercept mbedtls_ssl_setup - Install callback proactively
  * Always installs our RA-TLS callback (env var gating happens inside callback)
+ * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
  */
 int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2198,6 +2217,23 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
                     entry->installed_ours = 1;
                 }
                 pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+            }
+
+            /* Set authmode based on environment variable for mutual authentication */
+            /* This is consistent with OpenSSL and wolfSSL implementations */
+            void (*real_conf_authmode)(mbedtls_ssl_config*, int);
+            real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
+            if (!real_conf_authmode) {
+                real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+            }
+            if (real_conf_authmode) {
+                /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
+                int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
+                if (is_require_peer_cert_enabled()) {
+                    authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
+                    printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
+                }
+                real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
             }
         }
     }
