@@ -2241,9 +2241,10 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
 }
 
 /**
- * mbedTLS: Intercept mbedtls_ssl_handshake - Ensure callback is installed before handshake
+ * mbedTLS: Intercept mbedtls_ssl_handshake - Ensure callback and authmode are set before handshake
  * Always ensures our RA-TLS callback is installed (env var gating happens inside callback)
- * Note: We can't easily get the config from ssl without headers, so this is best-effort
+ * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
+ * Uses mbedtls_ssl_context_get_config() to access config from ssl context
  */
 int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2263,8 +2264,65 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
         return -1;
     }
 
-    /* Best-effort callback installation */
-    printf("[RA-TLS SO] Intercepted mbedtls_ssl_handshake (best-effort, cannot access config)\n");
+    printf("[RA-TLS SO] Intercepted mbedtls_ssl_handshake\n");
+
+    /* Get config from ssl context using public accessor function */
+    const mbedtls_ssl_config* (*get_config_func)(const mbedtls_ssl_context*);
+    get_config_func = ratls_real_dlsym("mbedtls_ssl_context_get_config");
+    if (!get_config_func) {
+        get_config_func = dlsym(RTLD_DEFAULT, "mbedtls_ssl_context_get_config");
+    }
+
+    if (get_config_func && ssl) {
+        const mbedtls_ssl_config* conf = get_config_func(ssl);
+        if (conf) {
+            /* Check if our callback is already installed */
+            pthread_mutex_lock(&g_mbedtls_callback_mutex);
+            mbedtls_callback_entry_t* entry = find_mbedtls_callback(conf);
+            int already_installed           = (entry && entry->installed_ours);
+            pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+
+            if (!already_installed) {
+                /* Install RA-TLS callback */
+                printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
+
+                void (*real_conf_verify)(mbedtls_ssl_config*,
+                                         int (*)(void*, mbedtls_x509_crt*, int, uint32_t*), void*);
+                real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
+                if (!real_conf_verify) {
+                    real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
+                }
+                if (real_conf_verify) {
+                    real_conf_verify((mbedtls_ssl_config*)conf, ratls_mbedtls_verify_callback,
+                                     (void*)conf);
+                    /* Mark as installed */
+                    pthread_mutex_lock(&g_mbedtls_callback_mutex);
+                    entry = find_mbedtls_callback(conf);
+                    if (entry) {
+                        entry->installed_ours = 1;
+                    }
+                    pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+                }
+
+                /* Set authmode based on environment variable for mutual authentication */
+                /* This is consistent with OpenSSL and wolfSSL implementations */
+                void (*real_conf_authmode)(mbedtls_ssl_config*, int);
+                real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
+                if (!real_conf_authmode) {
+                    real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+                }
+                if (real_conf_authmode) {
+                    /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
+                    int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
+                    if (is_require_peer_cert_enabled()) {
+                        authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
+                        printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
+                    }
+                    real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
+                }
+            }
+        }
+    }
 
     return real_func(ssl);
 }
