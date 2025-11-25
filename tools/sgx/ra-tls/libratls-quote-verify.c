@@ -16,18 +16,12 @@
 #include <sys/stat.h>
 
 /* Include TLS library headers for type definitions only - no linking */
+/* HAVE_MBEDTLS_HEADERS is always defined - mbedtls headers are required for this library */
 #define HAVE_MBEDTLS_HEADERS 1
-#ifdef HAVE_MBEDTLS_HEADERS
 #include <mbedtls/sha256.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509.h>
 #include <mbedtls/x509_crt.h>
-#else
-/* Forward declarations if headers not available */
-typedef struct mbedtls_ssl_context mbedtls_ssl_context;
-typedef struct mbedtls_ssl_config mbedtls_ssl_config;
-typedef struct mbedtls_x509_crt mbedtls_x509_crt;
-#endif
 #include <ra_tls.h>
 
 /* OpenSSL forward declarations (avoid including headers to prevent conflicts) */
@@ -118,6 +112,7 @@ typedef struct {
     int (*verify_callback)(void*, mbedtls_x509_crt*, int, uint32_t*);
     void* verify_p;
     int installed_ours; /* Flag: our verify callback is installed */
+    int user_authmode;  /* User's requested authmode (0=not set, 1=OPTIONAL, 2=REQUIRED) */
 } mbedtls_callback_entry_t;
 
 static mbedtls_callback_entry_t g_mbedtls_callbacks[MAX_CALLBACK_ENTRIES];
@@ -1738,9 +1733,45 @@ void mbedtls_ssl_conf_verify(mbedtls_ssl_config* conf,
 }
 
 /**
+ * mbedTLS: Intercept mbedtls_ssl_conf_authmode - Track user's authmode setting
+ * Store-only wrapper: saves user's authmode for later use in "user setting > env var" logic
+ * This is consistent with OpenSSL and wolfSSL which track verify_mode
+ */
+void mbedtls_ssl_conf_authmode(mbedtls_ssl_config* conf, int authmode) {
+    /* Store user's authmode in our tracking map */
+    pthread_mutex_lock(&g_mbedtls_callback_mutex);
+    mbedtls_callback_entry_t* entry = find_mbedtls_callback(conf);
+    if (entry) {
+        entry->user_authmode = authmode;
+    } else {
+        /* Create new entry if not exists */
+        if (g_mbedtls_count < MAX_CALLBACK_ENTRIES) {
+            g_mbedtls_callbacks[g_mbedtls_count].key            = conf;
+            g_mbedtls_callbacks[g_mbedtls_count].verify_callback = NULL;
+            g_mbedtls_callbacks[g_mbedtls_count].verify_p       = NULL;
+            g_mbedtls_callbacks[g_mbedtls_count].installed_ours = 0;
+            g_mbedtls_callbacks[g_mbedtls_count].user_authmode  = authmode;
+            g_mbedtls_count++;
+        }
+    }
+    pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+
+    /* Also call real function to set the authmode */
+    void (*real_func)(mbedtls_ssl_config*, int);
+    real_func = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+    }
+    if (real_func) {
+        real_func(conf, authmode);
+    }
+}
+
+/**
  * mbedTLS: Intercept mbedtls_ssl_config_defaults
  * Resolves real function per-call using RTLD_NEXT for correct dispatch
- * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
+ * Sets authmode based on user setting or RATLS_REQUIRE_PEER_CERT environment variable
+ * Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL)
  */
 int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int transport, int preset) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -1756,8 +1787,14 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int tran
                 "callback\n");
             mbedtls_ssl_conf_verify(conf, ratls_mbedtls_verify_callback, NULL);
 
-            /* Set authmode based on environment variable for mutual authentication */
-            /* This is consistent with OpenSSL and wolfSSL implementations */
+            /* Check if user has already set authmode */
+            pthread_mutex_lock(&g_mbedtls_callback_mutex);
+            mbedtls_callback_entry_t* entry = find_mbedtls_callback(conf);
+            int user_requires_peer_cert     = (entry && entry->user_authmode == 2);
+            pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+
+            /* Set authmode based on user setting or environment variable for mutual authentication */
+            /* Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL) */
             void (*real_conf_authmode)(mbedtls_ssl_config*, int);
             real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
             if (!real_conf_authmode) {
@@ -1766,7 +1803,7 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int tran
             if (real_conf_authmode) {
                 /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
                 int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
-                if (is_require_peer_cert_enabled()) {
+                if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
                     authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
                     printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
                 }
@@ -2184,10 +2221,11 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
 
     /* Always install callback if setup succeeded */
     if (ret == 0 && conf) {
-        /* Check if our callback is already installed */
+        /* Check if our callback is already installed and get user's authmode setting */
         pthread_mutex_lock(&g_mbedtls_callback_mutex);
         mbedtls_callback_entry_t* entry = find_mbedtls_callback(conf);
         int already_installed           = (entry && entry->installed_ours);
+        int user_requires_peer_cert     = (entry && entry->user_authmode == 2);
         pthread_mutex_unlock(&g_mbedtls_callback_mutex);
 
         if (!already_installed) {
@@ -2219,8 +2257,8 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
                 pthread_mutex_unlock(&g_mbedtls_callback_mutex);
             }
 
-            /* Set authmode based on environment variable for mutual authentication */
-            /* This is consistent with OpenSSL and wolfSSL implementations */
+            /* Set authmode based on user setting or environment variable for mutual authentication */
+            /* Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL) */
             void (*real_conf_authmode)(mbedtls_ssl_config*, int);
             real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
             if (!real_conf_authmode) {
@@ -2229,7 +2267,7 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
             if (real_conf_authmode) {
                 /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
                 int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
-                if (is_require_peer_cert_enabled()) {
+                if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
                     authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
                     printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
                 }
@@ -2241,9 +2279,13 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
 }
 
 /**
- * mbedTLS: Intercept mbedtls_ssl_handshake - Ensure callback is installed before handshake
+ * mbedTLS: Intercept mbedtls_ssl_handshake - Ensure callback and authmode are set before handshake
  * Always ensures our RA-TLS callback is installed (env var gating happens inside callback)
- * Note: We can't easily get the config from ssl without headers, so this is best-effort
+ * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
+ *
+ * Note: mbedtls_ssl_context_get_config() is a static inline function in mbedtls/ssl.h,
+ * so we call it directly (requires HAVE_MBEDTLS_HEADERS). This couples the .so to the
+ * mbedtls version used at build time, but is necessary to access config from ssl context.
  */
 int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2263,8 +2305,61 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
         return -1;
     }
 
-    /* Best-effort callback installation */
-    printf("[RA-TLS SO] Intercepted mbedtls_ssl_handshake (best-effort, cannot access config)\n");
+    printf("[RA-TLS SO] Intercepted mbedtls_ssl_handshake\n");
+
+    /* Get config from ssl context using static inline accessor function (called directly) */
+    /* HAVE_MBEDTLS_HEADERS is always defined - mbedtls headers are required */
+    if (ssl) {
+        const mbedtls_ssl_config* conf = mbedtls_ssl_context_get_config(ssl);
+        if (conf) {
+            /* Check if our callback is already installed */
+            pthread_mutex_lock(&g_mbedtls_callback_mutex);
+            mbedtls_callback_entry_t* entry = find_mbedtls_callback(conf);
+            int already_installed           = (entry && entry->installed_ours);
+            int user_requires_peer_cert     = (entry && entry->user_authmode == 2);
+            pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+
+            if (!already_installed) {
+                /* Install RA-TLS callback */
+                printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
+
+                void (*real_conf_verify)(mbedtls_ssl_config*,
+                                         int (*)(void*, mbedtls_x509_crt*, int, uint32_t*), void*);
+                real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
+                if (!real_conf_verify) {
+                    real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
+                }
+                if (real_conf_verify) {
+                    real_conf_verify((mbedtls_ssl_config*)conf, ratls_mbedtls_verify_callback,
+                                     (void*)conf);
+                    /* Mark as installed */
+                    pthread_mutex_lock(&g_mbedtls_callback_mutex);
+                    entry = find_mbedtls_callback(conf);
+                    if (entry) {
+                        entry->installed_ours = 1;
+                    }
+                    pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+                }
+
+                /* Set authmode based on user setting or environment variable for mutual authentication */
+                /* Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL) */
+                void (*real_conf_authmode)(mbedtls_ssl_config*, int);
+                real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
+                if (!real_conf_authmode) {
+                    real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+                }
+                if (real_conf_authmode) {
+                    /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
+                    int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
+                    if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
+                        authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
+                        printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
+                    }
+                    real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
+                }
+            }
+        }
+    }
 
     return real_func(ssl);
 }
