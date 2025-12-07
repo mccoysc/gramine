@@ -568,12 +568,63 @@ static int der_to_pem(const char* header, const char* footer, uint8_t* der, size
 }
 
 /**
+ * Create parent directory recursively (similar to mkdir -p)
+ * Returns 0 on success, -1 on failure
+ */
+static int ensure_parent_dir(const char* path, mode_t mode) {
+    char tmp[4096];
+    char* p = NULL;
+    size_t len;
+
+    /* Copy path to tmp buffer */
+    len = strlen(path);
+    if (len >= sizeof(tmp)) {
+        fprintf(stderr, "[RA-TLS SO] Path too long: %s\n", path);
+        return -1;
+    }
+    strncpy(tmp, path, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+
+    /* Find and remove the filename part (everything after last '/') */
+    p = strrchr(tmp, '/');
+    if (!p || p == tmp) {
+        /* No directory component or root directory */
+        return 0;
+    }
+    *p = '\0';  /* Now tmp contains just the directory path */
+
+    /* Create each directory component */
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, mode) != 0 && errno != EEXIST) {
+                fprintf(stderr, "[RA-TLS SO] Failed to create directory %s (errno=%d: %s)\n",
+                        tmp, errno, strerror(errno));
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+
+    /* Create the final directory */
+    if (mkdir(tmp, mode) != 0 && errno != EEXIST) {
+        fprintf(stderr, "[RA-TLS SO] Failed to create directory %s (errno=%d: %s)\n",
+                tmp, errno, strerror(errno));
+        return -1;
+    }
+
+    printf("[RA-TLS SO] Ensured directory exists: %s\n", tmp);
+    return 0;
+}
+
+/**
  * Write data to file with proper permissions
  */
 static int write_file(const char* path, size_t size, const uint8_t* data, int is_private_key) {
     FILE* file = fopen(path, "wb");
     if (!file) {
-        fprintf(stderr, "[RA-TLS SO] Failed to open file for writing: %s\n", path);
+        fprintf(stderr, "[RA-TLS SO] Failed to open file for writing: %s (errno=%d: %s)\n",
+                path, errno, strerror(errno));
         return -1;
     }
 
@@ -644,6 +695,15 @@ static int generate_ratls_credentials(void) {
     if (ret < 0) {
         fprintf(stderr, "[RA-TLS SO] Failed to convert certificate to PEM\n");
         goto err;
+    }
+
+    /* Ensure parent directories exist before writing files */
+    /* Use 0700 for key directory (private), 0755 for cert directory (public) */
+    if (ensure_parent_dir(key_path, 0700) != 0) {
+        fprintf(stderr, "[RA-TLS SO] Warning: Failed to create key directory, write may fail\n");
+    }
+    if (ensure_parent_dir(cert_path, 0755) != 0) {
+        fprintf(stderr, "[RA-TLS SO] Warning: Failed to create cert directory, write may fail\n");
     }
 
     ret = write_file(key_path, key_pem_size, key_pem, 1);
