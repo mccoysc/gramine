@@ -1842,11 +1842,6 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int tran
     if (real_func) {
         ret = real_func(conf, endpoint, transport, preset);
         if (ret == 0) {
-            printf(
-                "[RA-TLS SO] Intercepted mbedtls_ssl_config_defaults, installing RA-TLS "
-                "callback\n");
-            mbedtls_ssl_conf_verify(conf, ratls_mbedtls_verify_callback, NULL);
-
             /* Check if user has already set authmode */
             pthread_mutex_lock(&g_mbedtls_callback_mutex);
             mbedtls_callback_entry_t* entry = find_mbedtls_callback(conf);
@@ -1994,26 +1989,6 @@ SSL_CTX* SSL_CTX_new(const void* method) {
     }
 
     SSL_CTX* ctx = real_func(method);
-    if (ctx) {
-        printf("[RA-TLS SO] Intercepted SSL_CTX_new, proactively installing RA-TLS callback\n");
-
-        /* Check if user has already set verification mode */
-        pthread_mutex_lock(&g_openssl_callback_mutex);
-        openssl_callback_entry_t* entry = find_openssl_ctx_callback(ctx);
-        int user_requires_peer_cert     = (entry && (entry->verify_mode & 0x02));
-        pthread_mutex_unlock(&g_openssl_callback_mutex);
-
-        /* Priority: user setting > environment variable */
-        int mode = 0x01; /* SSL_VERIFY_PEER */
-        if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-            mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT */
-        }
-
-        /* Set reentrancy guard to prevent storing our own callback */
-        g_installing_ours = 1;
-        SSL_CTX_set_verify(ctx, mode, ratls_openssl_verify_cb);
-        g_installing_ours = 0;
-    }
     return ctx;
 }
 
@@ -2040,28 +2015,6 @@ SSL* SSL_new(SSL_CTX* ctx) {
     }
 
     SSL* ssl = real_func(ctx);
-    if (ssl) {
-        printf("[RA-TLS SO] Intercepted SSL_new, proactively installing RA-TLS callback\n");
-
-        /* Check if user has already set verification mode on SSL or CTX */
-        pthread_mutex_lock(&g_openssl_callback_mutex);
-        openssl_callback_entry_t* ssl_entry = find_openssl_ssl_callback(ssl);
-        openssl_callback_entry_t* ctx_entry = find_openssl_ctx_callback(ctx);
-        int user_requires_peer_cert         = (ssl_entry && (ssl_entry->verify_mode & 0x02)) ||
-                                      (ctx_entry && (ctx_entry->verify_mode & 0x02));
-        pthread_mutex_unlock(&g_openssl_callback_mutex);
-
-        /* Priority: user setting > environment variable */
-        int mode = 0x01; /* SSL_VERIFY_PEER */
-        if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-            mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT */
-        }
-
-        /* Set reentrancy guard to prevent storing our own callback */
-        g_installing_ours = 1;
-        SSL_set_verify(ssl, mode, ratls_openssl_verify_cb);
-        g_installing_ours = 0;
-    }
     return ssl;
 }
 
@@ -2499,40 +2452,6 @@ void* wolfSSL_new(void* ctx) {
     }
 
     void* ssl = real_func(ctx);
-    if (ssl) {
-        printf("[RA-TLS SO] Intercepted wolfSSL_new, proactively installing RA-TLS callback\n");
-
-        /* Check if user has already set verification mode on SSL or CTX */
-        pthread_mutex_lock(&g_wolfssl_callback_mutex);
-        wolfssl_callback_entry_t* ssl_entry = NULL;
-        wolfssl_callback_entry_t* ctx_entry = NULL;
-        for (size_t i = 0; i < g_wolfssl_ssl_count; i++) {
-            if (g_wolfssl_ssl_callbacks[i].key == ssl) {
-                ssl_entry = &g_wolfssl_ssl_callbacks[i];
-                break;
-            }
-        }
-        for (size_t i = 0; i < g_wolfssl_ctx_count; i++) {
-            if (g_wolfssl_ctx_callbacks[i].key == ctx) {
-                ctx_entry = &g_wolfssl_ctx_callbacks[i];
-                break;
-            }
-        }
-        int user_requires_peer_cert = (ssl_entry && (ssl_entry->verify_mode & 0x02)) ||
-                                      (ctx_entry && (ctx_entry->verify_mode & 0x02));
-        pthread_mutex_unlock(&g_wolfssl_callback_mutex);
-
-        /* Priority: user setting > environment variable */
-        int mode = 0x01; /* SSL_VERIFY_PEER equivalent */
-        if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-            mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT equivalent */
-        }
-
-        /* Set reentrancy guard to prevent storing our own callback */
-        g_installing_ours = 1;
-        wolfSSL_set_verify(ssl, mode, ratls_wolfssl_verify_cb);
-        g_installing_ours = 0;
-    }
     return ssl;
 }
 
