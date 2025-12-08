@@ -4,6 +4,8 @@
 #include <string.h>
 /* POSIX string functions (strcasecmp) */
 #include <strings.h>
+/* Error number definitions (errno, EEXIST) */
+#include <errno.h>
 
 /* Dynamic linking API (dlsym, dlopen, dlclose, dladdr, dlerror) */
 #include <dlfcn.h>
