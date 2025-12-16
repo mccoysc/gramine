@@ -1125,14 +1125,14 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
     uint16_t svn     = *(const uint16_t*)isv_svn;
     printf("[RA-TLS SO]   ISV_PROD_ID: %u (0x%04x)\n", prod_id, prod_id);
     printf("[RA-TLS SO]   ISV_SVN:     %u (0x%04x)\n", svn, svn);
-    
+
     /* Print platform instance ID from callback parameter */
     if (platform_instance_id && *platform_instance_id) {
         printf("[RA-TLS SO]   Platform instance ID: %s\n", platform_instance_id);
     } else {
         printf("[RA-TLS SO]   Platform instance ID: <not available>\n");
     }
-    
+
     /* Print certificate DER info */
     printf("[RA-TLS SO]   Certificate DER size: %zu bytes\n", cert_der_size);
 
@@ -1397,7 +1397,7 @@ static int ratls_mbedtls_verify_callback(void* data, mbedtls_x509_crt* crt, int 
     struct ra_tls_verify_callback_results verify_callback_results = {0};
     int ret =
         ra_tls_verify_callback_extended_der(crt->raw.p, crt->raw.len, &verify_callback_results);
-    
+
     /* Check if this is a "no RA-TLS OID found" error for depth > 0 certificates */
     if (ret == MBEDTLS_ERR_X509_INVALID_EXTENSIONS && depth > 0) {
         /* For CA/intermediate certificates (depth > 0) without RA-TLS quote:
@@ -1407,7 +1407,7 @@ static int ratls_mbedtls_verify_callback(void* data, mbedtls_x509_crt* crt, int 
         }
         return 0;
     }
-    
+
     if (ret < 0) {
         fprintf(stderr, "[RA-TLS SO] RA-TLS verification failed: %d\n", ret);
         return -1;
@@ -2021,8 +2021,9 @@ SSL* SSL_new(SSL_CTX* ctx) {
 }
 
 /**
- * OpenSSL: Intercept SSL_connect - Ensure callback is installed before handshake
- * Always ensures our RA-TLS callback is installed (env var gating happens inside callback)
+u哦 * OpenSSL: Intercept SSL_connect - Force callback installation before handshake
+ * ALWAYS installs our RA-TLS callback to ensure verification is performed
+ * (env var gating happens inside callback)
  */
 int SSL_connect(SSL* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2042,50 +2043,56 @@ int SSL_connect(SSL* ssl) {
         return -1;
     }
 
-    /* Ensure RA-TLS callback is installed */
-    printf("[RA-TLS SO] Intercepted SSL_connect, ensuring RA-TLS callback is installed\n");
+    /* FORCE RA-TLS callback installation - always install regardless of previous state */
+    printf("[RA-TLS SO] Intercepted SSL_connect, FORCING RA-TLS callback installation\n");
 
-    /* Check if our callback is already installed */
+    /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_openssl_callback_mutex);
     openssl_callback_entry_t* entry = find_openssl_ssl_callback(ssl);
-    int already_installed           = (entry && entry->installed_ours_verify);
     int user_requires_peer_cert     = (entry && (entry->verify_mode & 0x02));
     pthread_mutex_unlock(&g_openssl_callback_mutex);
 
-    if (!already_installed) {
-        /* Install our callback now */
-        printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
-        /* Priority: user setting > environment variable */
-        /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
-        int mode = 0x01; /* SSL_VERIFY_PEER */
-        if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-            mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT */
-        }
+    /* ALWAYS install our callback - this is the key change for forced verification */
+    printf("[RA-TLS SO] Installing RA-TLS callback before handshake (outbound connection)\n");
+    /* Priority: user setting > environment variable */
+    /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
+    int mode = 0x01; /* SSL_VERIFY_PEER */
+    if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
+        mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT */
+    }
 
-        /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
-        void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
-        real_set_verify = ratls_real_dlsym("SSL_set_verify");
-        if (!real_set_verify) {
-            real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+    /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
+    void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
+    real_set_verify = ratls_real_dlsym("SSL_set_verify");
+    if (!real_set_verify) {
+        real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+    }
+    if (real_set_verify) {
+        real_set_verify(ssl, mode, ratls_openssl_verify_cb);
+        /* Update tracking - create entry if it doesn't exist */
+        pthread_mutex_lock(&g_openssl_callback_mutex);
+        entry = find_openssl_ssl_callback(ssl);
+        if (!entry && g_openssl_ssl_count < MAX_CALLBACK_ENTRIES) {
+            entry = &g_openssl_ssl_callbacks[g_openssl_ssl_count++];
+            entry->key = ssl;
+            entry->verify_callback = NULL;
+            entry->verify_mode = mode;
+            entry->cert_verify_callback = NULL;
+            entry->cert_verify_arg = NULL;
         }
-        if (real_set_verify) {
-            real_set_verify(ssl, mode, ratls_openssl_verify_cb);
-            /* Mark as installed */
-            pthread_mutex_lock(&g_openssl_callback_mutex);
-            entry = find_openssl_ssl_callback(ssl);
-            if (entry) {
-                entry->installed_ours_verify = 1;
-            }
-            pthread_mutex_unlock(&g_openssl_callback_mutex);
+        if (entry) {
+            entry->installed_ours_verify = 1;
         }
+        pthread_mutex_unlock(&g_openssl_callback_mutex);
     }
 
     return real_func(ssl);
 }
 
 /**
- * OpenSSL: Intercept SSL_accept - Ensure callback is installed before handshake
- * Always ensures our RA-TLS callback is installed (env var gating happens inside callback)
+ * OpenSSL: Intercept SSL_accept - Force callback installation before handshake
+ * ALWAYS installs our RA-TLS callback to ensure verification is performed
+ * (env var gating happens inside callback)
  */
 int SSL_accept(SSL* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2105,50 +2112,56 @@ int SSL_accept(SSL* ssl) {
         return -1;
     }
 
-    /* Ensure RA-TLS callback is installed */
-    printf("[RA-TLS SO] Intercepted SSL_accept, ensuring RA-TLS callback is installed\n");
+    /* FORCE RA-TLS callback installation - always install regardless of previous state */
+    printf("[RA-TLS SO] Intercepted SSL_accept, FORCING RA-TLS callback installation\n");
 
-    /* Check if our callback is already installed */
+    /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_openssl_callback_mutex);
     openssl_callback_entry_t* entry = find_openssl_ssl_callback(ssl);
-    int already_installed           = (entry && entry->installed_ours_verify);
     int user_requires_peer_cert     = (entry && (entry->verify_mode & 0x02));
     pthread_mutex_unlock(&g_openssl_callback_mutex);
 
-    if (!already_installed) {
-        /* Install our callback now */
-        printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
-        /* Priority: user setting > environment variable */
-        /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
-        int mode = 0x01; /* SSL_VERIFY_PEER */
-        if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-            mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT */
-        }
+    /* ALWAYS install our callback - this is the key change for forced verification */
+    printf("[RA-TLS SO] Installing RA-TLS callback before handshake (inbound connection)\n");
+    /* Priority: user setting > environment variable */
+    /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
+    int mode = 0x01; /* SSL_VERIFY_PEER */
+    if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
+        mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT */
+    }
 
-        /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
-        void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
-        real_set_verify = ratls_real_dlsym("SSL_set_verify");
-        if (!real_set_verify) {
-            real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+    /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
+    void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
+    real_set_verify = ratls_real_dlsym("SSL_set_verify");
+    if (!real_set_verify) {
+        real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+    }
+    if (real_set_verify) {
+        real_set_verify(ssl, mode, ratls_openssl_verify_cb);
+        /* Update tracking - create entry if it doesn't exist */
+        pthread_mutex_lock(&g_openssl_callback_mutex);
+        entry = find_openssl_ssl_callback(ssl);
+        if (!entry && g_openssl_ssl_count < MAX_CALLBACK_ENTRIES) {
+            entry = &g_openssl_ssl_callbacks[g_openssl_ssl_count++];
+            entry->key = ssl;
+            entry->verify_callback = NULL;
+            entry->verify_mode = mode;
+            entry->cert_verify_callback = NULL;
+            entry->cert_verify_arg = NULL;
         }
-        if (real_set_verify) {
-            real_set_verify(ssl, mode, ratls_openssl_verify_cb);
-            /* Mark as installed */
-            pthread_mutex_lock(&g_openssl_callback_mutex);
-            entry = find_openssl_ssl_callback(ssl);
-            if (entry) {
-                entry->installed_ours_verify = 1;
-            }
-            pthread_mutex_unlock(&g_openssl_callback_mutex);
+        if (entry) {
+            entry->installed_ours_verify = 1;
         }
+        pthread_mutex_unlock(&g_openssl_callback_mutex);
     }
 
     return real_func(ssl);
 }
 
 /**
- * OpenSSL: Intercept SSL_do_handshake - Ensure callback is installed before handshake
- * Always ensures our RA-TLS callback is installed (env var gating happens inside callback)
+ * OpenSSL: Intercept SSL_do_handshake - Force callback installation before handshake
+ * ALWAYS installs our RA-TLS callback to ensure verification is performed
+ * (env var gating happens inside callback)
  */
 int SSL_do_handshake(SSL* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2168,50 +2181,56 @@ int SSL_do_handshake(SSL* ssl) {
         return -1;
     }
 
-    /* Ensure RA-TLS callback is installed */
-    printf("[RA-TLS SO] Intercepted SSL_do_handshake, ensuring RA-TLS callback is installed\n");
+    /* FORCE RA-TLS callback installation - always install regardless of previous state */
+    printf("[RA-TLS SO] Intercepted SSL_do_handshake, FORCING RA-TLS callback installation\n");
 
-    /* Check if our callback is already installed */
+    /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_openssl_callback_mutex);
     openssl_callback_entry_t* entry = find_openssl_ssl_callback(ssl);
-    int already_installed           = (entry && entry->installed_ours_verify);
     int user_requires_peer_cert     = (entry && (entry->verify_mode & 0x02));
     pthread_mutex_unlock(&g_openssl_callback_mutex);
 
-    if (!already_installed) {
-        /* Install our callback now */
-        printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
-        /* Priority: user setting > environment variable */
-        /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
-        int mode = 0x01; /* SSL_VERIFY_PEER */
-        if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-            mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT */
-        }
+    /* ALWAYS install our callback - this is the key change for forced verification */
+    printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
+    /* Priority: user setting > environment variable */
+    /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
+    int mode = 0x01; /* SSL_VERIFY_PEER */
+    if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
+        mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT */
+    }
 
-        /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
-        void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
-        real_set_verify = ratls_real_dlsym("SSL_set_verify");
-        if (!real_set_verify) {
-            real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+    /* Resolve real SSL_set_verify function and call it directly (not our wrapper) */
+    void (*real_set_verify)(SSL*, int, int (*)(int, X509_STORE_CTX*));
+    real_set_verify = ratls_real_dlsym("SSL_set_verify");
+    if (!real_set_verify) {
+        real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+    }
+    if (real_set_verify) {
+        real_set_verify(ssl, mode, ratls_openssl_verify_cb);
+        /* Update tracking - create entry if it doesn't exist */
+        pthread_mutex_lock(&g_openssl_callback_mutex);
+        entry = find_openssl_ssl_callback(ssl);
+        if (!entry && g_openssl_ssl_count < MAX_CALLBACK_ENTRIES) {
+            entry = &g_openssl_ssl_callbacks[g_openssl_ssl_count++];
+            entry->key = ssl;
+            entry->verify_callback = NULL;
+            entry->verify_mode = mode;
+            entry->cert_verify_callback = NULL;
+            entry->cert_verify_arg = NULL;
         }
-        if (real_set_verify) {
-            real_set_verify(ssl, mode, ratls_openssl_verify_cb);
-            /* Mark as installed */
-            pthread_mutex_lock(&g_openssl_callback_mutex);
-            entry = find_openssl_ssl_callback(ssl);
-            if (entry) {
-                entry->installed_ours_verify = 1;
-            }
-            pthread_mutex_unlock(&g_openssl_callback_mutex);
+        if (entry) {
+            entry->installed_ours_verify = 1;
         }
+        pthread_mutex_unlock(&g_openssl_callback_mutex);
     }
 
     return real_func(ssl);
 }
 
 /**
- * mbedTLS: Intercept mbedtls_ssl_setup - Install callback proactively
- * Always installs our RA-TLS callback (env var gating happens inside callback)
+ * mbedTLS: Intercept mbedtls_ssl_setup - Force callback installation
+ * ALWAYS installs our RA-TLS callback to ensure verification is performed
+ * (env var gating happens inside callback)
  * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
  */
 int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) {
@@ -2234,68 +2253,71 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
 
     int ret = real_func(ssl, conf);
 
-    /* Always install callback if setup succeeded */
+    /* FORCE callback installation if setup succeeded */
     if (ret == 0 && conf) {
-        /* Check if our callback is already installed and get user's authmode setting */
+        /* FORCE RA-TLS callback installation - always install regardless of previous state */
+        printf("[RA-TLS SO] Intercepted mbedtls_ssl_setup, FORCING RA-TLS callback installation\n");
+
+        /* Get user's authmode setting if available */
         pthread_mutex_lock(&g_mbedtls_callback_mutex);
         mbedtls_callback_entry_t* entry = find_mbedtls_callback(conf);
-        int already_installed           = (entry && entry->installed_ours);
         int user_requires_peer_cert     = (entry && entry->user_authmode == 2);
         pthread_mutex_unlock(&g_mbedtls_callback_mutex);
 
-        if (!already_installed) {
-            /* Install RA-TLS callback */
-            printf(
-                "[RA-TLS SO] Intercepted mbedtls_ssl_setup, proactively installing RA-TLS "
-                "callback\n");
+        /* ALWAYS install RA-TLS callback - this is the key change for forced verification */
+        /* Resolve real mbedtls_ssl_conf_verify function and call it directly (not our wrapper) */
+        void (*real_conf_verify)(mbedtls_ssl_config*,
+                                 int (*)(void*, mbedtls_x509_crt*, int, uint32_t*), void*);
+        real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
+        if (!real_conf_verify) {
+            real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
+        }
+        if (real_conf_verify) {
+            /* Cast away const - mbedtls_ssl_setup receives const config but
+             * mbedtls_ssl_conf_verify expects non-const. This is safe because the config is
+             * built before handshake and mbedtls_ssl_conf_verify only modifies it. */
+            real_conf_verify((mbedtls_ssl_config*)conf, ratls_mbedtls_verify_callback,
+                             (void*)conf);
+            /* Update tracking - create entry if it doesn't exist */
+            pthread_mutex_lock(&g_mbedtls_callback_mutex);
+            entry = find_mbedtls_callback(conf);
+            if (!entry && g_mbedtls_count < MAX_CALLBACK_ENTRIES) {
+                entry = &g_mbedtls_callbacks[g_mbedtls_count++];
+                entry->key = (void*)conf;
+                entry->verify_callback = NULL;
+                entry->verify_p = NULL;
+                entry->user_authmode = 0;
+            }
+            if (entry) {
+                entry->installed_ours = 1;
+            }
+            pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+        }
 
-            /* Resolve real mbedtls_ssl_conf_verify function and call it directly (not our wrapper)
-             */
-            void (*real_conf_verify)(mbedtls_ssl_config*,
-                                     int (*)(void*, mbedtls_x509_crt*, int, uint32_t*), void*);
-            real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
-            if (!real_conf_verify) {
-                real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
+        /* Set authmode based on user setting or environment variable for mutual authentication */
+        /* Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL) */
+        void (*real_conf_authmode)(mbedtls_ssl_config*, int);
+        real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
+        if (!real_conf_authmode) {
+            real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+        }
+        if (real_conf_authmode) {
+            /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
+            int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
+            if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
+                authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
+                printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
             }
-            if (real_conf_verify) {
-                /* Cast away const - mbedtls_ssl_setup receives const config but
-                 * mbedtls_ssl_conf_verify expects non-const. This is safe because the config is
-                 * built before handshake and mbedtls_ssl_conf_verify only modifies it. */
-                real_conf_verify((mbedtls_ssl_config*)conf, ratls_mbedtls_verify_callback,
-                                 (void*)conf);
-                /* Mark as installed */
-                pthread_mutex_lock(&g_mbedtls_callback_mutex);
-                entry = find_mbedtls_callback(conf);
-                if (entry) {
-                    entry->installed_ours = 1;
-                }
-                pthread_mutex_unlock(&g_mbedtls_callback_mutex);
-            }
-
-            /* Set authmode based on user setting or environment variable for mutual authentication */
-            /* Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL) */
-            void (*real_conf_authmode)(mbedtls_ssl_config*, int);
-            real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
-            if (!real_conf_authmode) {
-                real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
-            }
-            if (real_conf_authmode) {
-                /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
-                int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
-                if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-                    authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
-                    printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
-                }
-                real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
-            }
+            real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
         }
     }
     return ret;
 }
 
 /**
- * mbedTLS: Intercept mbedtls_ssl_handshake - Ensure callback and authmode are set before handshake
- * Always ensures our RA-TLS callback is installed (env var gating happens inside callback)
+ * mbedTLS: Intercept mbedtls_ssl_handshake - Force callback installation before handshake
+ * ALWAYS installs our RA-TLS callback to ensure verification is performed
+ * (env var gating happens inside callback)
  * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
  *
  * Note: mbedtls_ssl_context_get_config() is a static inline function in mbedtls/ssl.h,
@@ -2320,58 +2342,63 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
         return -1;
     }
 
-    printf("[RA-TLS SO] Intercepted mbedtls_ssl_handshake\n");
+    /* FORCE RA-TLS callback installation - always install regardless of previous state */
+    printf("[RA-TLS SO] Intercepted mbedtls_ssl_handshake, FORCING RA-TLS callback installation\n");
 
     /* Get config from ssl context using static inline accessor function (called directly) */
     /* HAVE_MBEDTLS_HEADERS is always defined - mbedtls headers are required */
     if (ssl) {
         const mbedtls_ssl_config* conf = mbedtls_ssl_context_get_config(ssl);
         if (conf) {
-            /* Check if our callback is already installed */
+            /* Get user's authmode setting if available */
             pthread_mutex_lock(&g_mbedtls_callback_mutex);
             mbedtls_callback_entry_t* entry = find_mbedtls_callback(conf);
-            int already_installed           = (entry && entry->installed_ours);
             int user_requires_peer_cert     = (entry && entry->user_authmode == 2);
             pthread_mutex_unlock(&g_mbedtls_callback_mutex);
 
-            if (!already_installed) {
-                /* Install RA-TLS callback */
-                printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
+            /* ALWAYS install RA-TLS callback - this is the key change for forced verification */
+            printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
 
-                void (*real_conf_verify)(mbedtls_ssl_config*,
-                                         int (*)(void*, mbedtls_x509_crt*, int, uint32_t*), void*);
-                real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
-                if (!real_conf_verify) {
-                    real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
+            void (*real_conf_verify)(mbedtls_ssl_config*,
+                                     int (*)(void*, mbedtls_x509_crt*, int, uint32_t*), void*);
+            real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
+            if (!real_conf_verify) {
+                real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
+            }
+            if (real_conf_verify) {
+                real_conf_verify((mbedtls_ssl_config*)conf, ratls_mbedtls_verify_callback,
+                                 (void*)conf);
+                /* Update tracking - create entry if it doesn't exist */
+                pthread_mutex_lock(&g_mbedtls_callback_mutex);
+                entry = find_mbedtls_callback(conf);
+                if (!entry && g_mbedtls_count < MAX_CALLBACK_ENTRIES) {
+                    entry = &g_mbedtls_callbacks[g_mbedtls_count++];
+                    entry->key = (void*)conf;
+                    entry->verify_callback = NULL;
+                    entry->verify_p = NULL;
+                    entry->user_authmode = 0;
                 }
-                if (real_conf_verify) {
-                    real_conf_verify((mbedtls_ssl_config*)conf, ratls_mbedtls_verify_callback,
-                                     (void*)conf);
-                    /* Mark as installed */
-                    pthread_mutex_lock(&g_mbedtls_callback_mutex);
-                    entry = find_mbedtls_callback(conf);
-                    if (entry) {
-                        entry->installed_ours = 1;
-                    }
-                    pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+                if (entry) {
+                    entry->installed_ours = 1;
                 }
+                pthread_mutex_unlock(&g_mbedtls_callback_mutex);
+            }
 
-                /* Set authmode based on user setting or environment variable for mutual authentication */
-                /* Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL) */
-                void (*real_conf_authmode)(mbedtls_ssl_config*, int);
-                real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
-                if (!real_conf_authmode) {
-                    real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+            /* Set authmode based on user setting or environment variable for mutual authentication */
+            /* Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL) */
+            void (*real_conf_authmode)(mbedtls_ssl_config*, int);
+            real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
+            if (!real_conf_authmode) {
+                real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+            }
+            if (real_conf_authmode) {
+                /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
+                int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
+                if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
+                    authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
+                    printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
                 }
-                if (real_conf_authmode) {
-                    /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
-                    int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
-                    if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-                        authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
-                        printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
-                    }
-                    real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
-                }
+                real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
             }
         }
     }
@@ -2458,11 +2485,9 @@ void* wolfSSL_new(void* ctx) {
 }
 
 /**
- * wolfSSL: Intercept wolfSSL_connect - Ensure callback is installed before handshake
- */
-/**
- * wolfSSL: Intercept wolfSSL_connect - Ensure callback is installed before handshake
- * Always ensures our RA-TLS callback is installed (env var gating happens inside callback)
+ * wolfSSL: Intercept wolfSSL_connect - Force callback installation before handshake
+ * ALWAYS installs our RA-TLS callback to ensure verification is performed
+ * (env var gating happens inside callback)
  */
 int wolfSSL_connect(void* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2482,50 +2507,54 @@ int wolfSSL_connect(void* ssl) {
         return -1;
     }
 
-    /* Ensure RA-TLS callback is installed */
-    printf("[RA-TLS SO] Intercepted wolfSSL_connect, ensuring RA-TLS callback is installed\n");
+    /* FORCE RA-TLS callback installation - always install regardless of previous state */
+    printf("[RA-TLS SO] Intercepted wolfSSL_connect, FORCING RA-TLS callback installation\n");
 
-    /* Check if our callback is already installed */
+    /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_wolfssl_callback_mutex);
     wolfssl_callback_entry_t* entry = find_wolfssl_ssl_callback(ssl);
-    int already_installed           = (entry && entry->installed_ours);
     int user_requires_peer_cert     = (entry && (entry->verify_mode & 0x02));
     pthread_mutex_unlock(&g_wolfssl_callback_mutex);
 
-    if (!already_installed) {
-        /* Install our callback now */
-        printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
-        /* Priority: user setting > environment variable */
-        /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
-        int mode = 0x01; /* SSL_VERIFY_PEER equivalent */
-        if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-            mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT equivalent */
-        }
+    /* ALWAYS install our callback - this is the key change for forced verification */
+    printf("[RA-TLS SO] Installing RA-TLS callback before handshake (outbound connection)\n");
+    /* Priority: user setting > environment variable */
+    /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
+    int mode = 0x01; /* SSL_VERIFY_PEER equivalent */
+    if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
+        mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT equivalent */
+    }
 
-        /* Resolve real wolfSSL_set_verify function and call it directly (not our wrapper) */
-        void (*real_set_verify)(void*, int, void*);
-        real_set_verify = ratls_real_dlsym("wolfSSL_set_verify");
-        if (!real_set_verify) {
-            real_set_verify = dlsym(RTLD_DEFAULT, "wolfSSL_set_verify");
+    /* Resolve real wolfSSL_set_verify function and call it directly (not our wrapper) */
+    void (*real_set_verify)(void*, int, void*);
+    real_set_verify = ratls_real_dlsym("wolfSSL_set_verify");
+    if (!real_set_verify) {
+        real_set_verify = dlsym(RTLD_DEFAULT, "wolfSSL_set_verify");
+    }
+    if (real_set_verify) {
+        real_set_verify(ssl, mode, (void*)ratls_wolfssl_verify_cb);
+        /* Update tracking - create entry if it doesn't exist */
+        pthread_mutex_lock(&g_wolfssl_callback_mutex);
+        entry = find_wolfssl_ssl_callback(ssl);
+        if (!entry && g_wolfssl_ssl_count < MAX_CALLBACK_ENTRIES) {
+            entry = &g_wolfssl_ssl_callbacks[g_wolfssl_ssl_count++];
+            entry->key = ssl;
+            entry->verify_callback = NULL;
+            entry->verify_mode = mode;
         }
-        if (real_set_verify) {
-            real_set_verify(ssl, mode, (void*)ratls_wolfssl_verify_cb);
-            /* Mark as installed */
-            pthread_mutex_lock(&g_wolfssl_callback_mutex);
-            entry = find_wolfssl_ssl_callback(ssl);
-            if (entry) {
-                entry->installed_ours = 1;
-            }
-            pthread_mutex_unlock(&g_wolfssl_callback_mutex);
+        if (entry) {
+            entry->installed_ours = 1;
         }
+        pthread_mutex_unlock(&g_wolfssl_callback_mutex);
     }
 
     return real_func(ssl);
 }
 
 /**
- * wolfSSL: Intercept wolfSSL_accept - Ensure callback is installed before handshake
- * Always ensures our RA-TLS callback is installed (env var gating happens inside callback)
+ * wolfSSL: Intercept wolfSSL_accept - Force callback installation before handshake
+ * ALWAYS installs our RA-TLS callback to ensure verification is performed
+ * (env var gating happens inside callback)
  */
 int wolfSSL_accept(void* ssl) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2545,42 +2574,45 @@ int wolfSSL_accept(void* ssl) {
         return -1;
     }
 
-    /* Ensure RA-TLS callback is installed */
-    printf("[RA-TLS SO] Intercepted wolfSSL_accept, ensuring RA-TLS callback is installed\n");
+    /* FORCE RA-TLS callback installation - always install regardless of previous state */
+    printf("[RA-TLS SO] Intercepted wolfSSL_accept, FORCING RA-TLS callback installation\n");
 
-    /* Check if our callback is already installed */
+    /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_wolfssl_callback_mutex);
     wolfssl_callback_entry_t* entry = find_wolfssl_ssl_callback(ssl);
-    int already_installed           = (entry && entry->installed_ours);
     int user_requires_peer_cert     = (entry && (entry->verify_mode & 0x02));
     pthread_mutex_unlock(&g_wolfssl_callback_mutex);
 
-    if (!already_installed) {
-        /* Install our callback now */
-        printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
-        /* Priority: user setting > environment variable */
-        /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
-        int mode = 0x01; /* SSL_VERIFY_PEER equivalent */
-        if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
-            mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT equivalent */
-        }
+    /* ALWAYS install our callback - this is the key change for forced verification */
+    printf("[RA-TLS SO] Installing RA-TLS callback before handshake (inbound connection)\n");
+    /* Priority: user setting > environment variable */
+    /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
+    int mode = 0x01; /* SSL_VERIFY_PEER equivalent */
+    if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
+        mode |= 0x02; /* SSL_VERIFY_FAIL_IF_NO_PEER_CERT equivalent */
+    }
 
-        /* Resolve real wolfSSL_set_verify function and call it directly (not our wrapper) */
-        void (*real_set_verify)(void*, int, void*);
-        real_set_verify = ratls_real_dlsym("wolfSSL_set_verify");
-        if (!real_set_verify) {
-            real_set_verify = dlsym(RTLD_DEFAULT, "wolfSSL_set_verify");
+    /* Resolve real wolfSSL_set_verify function and call it directly (not our wrapper) */
+    void (*real_set_verify)(void*, int, void*);
+    real_set_verify = ratls_real_dlsym("wolfSSL_set_verify");
+    if (!real_set_verify) {
+        real_set_verify = dlsym(RTLD_DEFAULT, "wolfSSL_set_verify");
+    }
+    if (real_set_verify) {
+        real_set_verify(ssl, mode, (void*)ratls_wolfssl_verify_cb);
+        /* Update tracking - create entry if it doesn't exist */
+        pthread_mutex_lock(&g_wolfssl_callback_mutex);
+        entry = find_wolfssl_ssl_callback(ssl);
+        if (!entry && g_wolfssl_ssl_count < MAX_CALLBACK_ENTRIES) {
+            entry = &g_wolfssl_ssl_callbacks[g_wolfssl_ssl_count++];
+            entry->key = ssl;
+            entry->verify_callback = NULL;
+            entry->verify_mode = mode;
         }
-        if (real_set_verify) {
-            real_set_verify(ssl, mode, (void*)ratls_wolfssl_verify_cb);
-            /* Mark as installed */
-            pthread_mutex_lock(&g_wolfssl_callback_mutex);
-            entry = find_wolfssl_ssl_callback(ssl);
-            if (entry) {
-                entry->installed_ours = 1;
-            }
-            pthread_mutex_unlock(&g_wolfssl_callback_mutex);
+        if (entry) {
+            entry->installed_ours = 1;
         }
+        pthread_mutex_unlock(&g_wolfssl_callback_mutex);
     }
 
     return real_func(ssl);
@@ -3149,7 +3181,7 @@ static void* ratls_real_dlsym(const char* symbol) {
  */
 void* dlsym(void* handle, const char* symbol) {
     static void* (*real_dlsym)(void*, const char*) = NULL;
-    
+
     /* Bootstrap: get real dlsym on first call */
     if (!real_dlsym) {
         /* Use dlvsym to get the real dlsym without recursion */
@@ -3159,23 +3191,23 @@ void* dlsym(void* handle, const char* symbol) {
             return NULL;
         }
     }
-    
+
     if (!symbol) {
         return real_dlsym(handle, symbol);
     }
-    
+
     /* If this call originates from inside our own library while trying to resolve
      * real functions, do NOT rewrite anything - pass through to real dlsym */
     if (g_in_ratls_dlsym_lookup) {
         return real_dlsym(handle, symbol);
     }
-    
+
     /* Intercept RA-TLS measurement callback setter */
     if (strcmp(symbol, "ra_tls_set_measurement_callback") == 0) {
         printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)ra_tls_set_measurement_callback;
     }
-    
+
     /* Intercept mbedTLS functions */
     if (strcmp(symbol, "mbedtls_ssl_conf_verify") == 0) {
         printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
@@ -3193,7 +3225,7 @@ void* dlsym(void* handle, const char* symbol) {
         printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)mbedtls_ssl_handshake;
     }
-    
+
     /* Intercept OpenSSL functions */
     if (strcmp(symbol, "SSL_CTX_set_verify") == 0) {
         printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
@@ -3227,7 +3259,7 @@ void* dlsym(void* handle, const char* symbol) {
         printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_do_handshake;
     }
-    
+
     /* Intercept wolfSSL functions */
     if (strcmp(symbol, "wolfSSL_CTX_set_verify") == 0) {
         printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
@@ -3253,7 +3285,7 @@ void* dlsym(void* handle, const char* symbol) {
         printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)wolfSSL_accept;
     }
-    
+
     /* Pass through all other symbols */
     return real_dlsym(handle, symbol);
 }
