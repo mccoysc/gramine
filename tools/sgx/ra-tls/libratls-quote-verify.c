@@ -17,6 +17,14 @@
 #include <stdint.h>
 #include <sys/stat.h>
 
+/* Network interface enumeration (getifaddrs shim) */
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 /* Include TLS library headers for type definitions only - no linking */
 /* HAVE_MBEDTLS_HEADERS is always defined - mbedtls headers are required for this library */
 #define HAVE_MBEDTLS_HEADERS 1
@@ -40,6 +48,7 @@ typedef struct x509_store_ctx_st X509_STORE_CTX;
 #define ENV_RATLS_WHITELIST_CONFIG  "RATLS_WHITELIST_CONFIG"
 #define ENV_RATLS_ENABLE_VERIFY     "RATLS_ENABLE_VERIFY"
 #define ENV_RATLS_REQUIRE_PEER_CERT "RATLS_REQUIRE_PEER_CERT"
+#define ENV_GR_LOCAL_IP             "GR_LOCAL_IP"
 
 /* Default paths */
 #define DEFAULT_KEY_PATH  "/tmp/priv.key"
@@ -3159,6 +3168,148 @@ int dlclose(void* handle) {
 
 /* Thread-local guard to prevent recursion when our own hooks call dlsym internally */
 static __thread int g_in_ratls_dlsym_lookup = 0;
+
+/**
+ * Magic number to identify ifaddrs structures allocated by our shim
+ * This allows freeifaddrs to distinguish our fake structures from real ones
+ */
+#define IFADDRS_SHIM_MAGIC 0x47524C4F  /* "GRLO" in hex */
+
+/**
+ * Extended ifaddrs structure with magic number for identification
+ */
+typedef struct {
+    struct ifaddrs ifa;
+    struct sockaddr_in addr;
+    struct sockaddr_in netmask;
+    char if_name[16];
+    uint32_t magic;
+} shim_ifaddrs_t;
+
+/**
+ * Real getifaddrs/freeifaddrs function pointers
+ */
+static int (*real_getifaddrs)(struct ifaddrs** ifap) = NULL;
+static void (*real_freeifaddrs)(struct ifaddrs* ifa) = NULL;
+
+/**
+ * getifaddrs shim - intercepts getifaddrs() calls and returns fake interface data
+ * based on the GR_LOCAL_IP environment variable.
+ *
+ * This is needed for MySQL Group Replication in Gramine/SGX environments where
+ * the real getifaddrs() fails because it uses netlink sockets which are not
+ * supported in Gramine.
+ *
+ * If GR_LOCAL_IP is not set, falls back to the real getifaddrs().
+ */
+int getifaddrs(struct ifaddrs** ifap) {
+    /* Resolve real getifaddrs on first call */
+    if (!real_getifaddrs) {
+        real_getifaddrs = (int (*)(struct ifaddrs**))ratls_real_dlsym("getifaddrs");
+        if (!real_getifaddrs) {
+            fprintf(stderr, "[RA-TLS SO] Failed to resolve real getifaddrs\n");
+            errno = ENOSYS;
+            return -1;
+        }
+    }
+
+    /* Check if GR_LOCAL_IP environment variable is set */
+    const char* local_ip = getenv(ENV_GR_LOCAL_IP);
+    if (!local_ip || local_ip[0] == '\0') {
+        /* No GR_LOCAL_IP set, try real getifaddrs */
+        int ret = real_getifaddrs(ifap);
+        if (ret == 0) {
+            return 0;  /* Real getifaddrs succeeded */
+        }
+        /* Real getifaddrs failed, but no GR_LOCAL_IP to use as fallback */
+        printf("[RA-TLS SO] getifaddrs failed and GR_LOCAL_IP not set\n");
+        return ret;
+    }
+
+    /* Parse the IP address */
+    struct in_addr parsed_addr;
+    if (inet_pton(AF_INET, local_ip, &parsed_addr) != 1) {
+        fprintf(stderr, "[RA-TLS SO] Invalid IP address in GR_LOCAL_IP: %s\n", local_ip);
+        errno = EINVAL;
+        return -1;
+    }
+
+    printf("[RA-TLS SO] getifaddrs shim: using GR_LOCAL_IP=%s\n", local_ip);
+
+    /* Allocate our extended ifaddrs structure */
+    shim_ifaddrs_t* shim = (shim_ifaddrs_t*)calloc(1, sizeof(shim_ifaddrs_t));
+    if (!shim) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    /* Set magic number for identification in freeifaddrs */
+    shim->magic = IFADDRS_SHIM_MAGIC;
+
+    /* Set up interface name */
+    strncpy(shim->if_name, "eth0", sizeof(shim->if_name) - 1);
+    shim->ifa.ifa_name = shim->if_name;
+
+    /* Set up flags (interface is up and running) */
+    shim->ifa.ifa_flags = IFF_UP | IFF_RUNNING | IFF_BROADCAST | IFF_MULTICAST;
+
+    /* Set up address */
+    shim->addr.sin_family = AF_INET;
+    shim->addr.sin_addr = parsed_addr;
+    shim->ifa.ifa_addr = (struct sockaddr*)&shim->addr;
+
+    /* Set up netmask (255.255.255.0 = /24) */
+    shim->netmask.sin_family = AF_INET;
+    shim->netmask.sin_addr.s_addr = htonl(0xFFFFFF00);
+    shim->ifa.ifa_netmask = (struct sockaddr*)&shim->netmask;
+
+    /* No broadcast address or destination */
+    shim->ifa.ifa_broadaddr = NULL;
+    shim->ifa.ifa_dstaddr = NULL;
+
+    /* No additional data */
+    shim->ifa.ifa_data = NULL;
+
+    /* End of list */
+    shim->ifa.ifa_next = NULL;
+
+    *ifap = &shim->ifa;
+    return 0;
+}
+
+/**
+ * freeifaddrs shim - frees ifaddrs structures
+ *
+ * Checks the magic number to determine if this is our fake structure
+ * or a real one from the system getifaddrs().
+ */
+void freeifaddrs(struct ifaddrs* ifa) {
+    /* Resolve real freeifaddrs on first call */
+    if (!real_freeifaddrs) {
+        real_freeifaddrs = (void (*)(struct ifaddrs*))ratls_real_dlsym("freeifaddrs");
+        if (!real_freeifaddrs) {
+            fprintf(stderr, "[RA-TLS SO] Failed to resolve real freeifaddrs\n");
+            return;
+        }
+    }
+
+    if (!ifa) {
+        return;
+    }
+
+    /* Check if this is our shim structure by looking at the magic number */
+    /* The magic is stored right after the ifaddrs struct in our extended structure */
+    shim_ifaddrs_t* shim = (shim_ifaddrs_t*)ifa;
+    if (shim->magic == IFADDRS_SHIM_MAGIC) {
+        /* This is our fake structure, free it directly */
+        printf("[RA-TLS SO] freeifaddrs shim: freeing shim-allocated structure\n");
+        free(shim);
+        return;
+    }
+
+    /* Not our structure, call real freeifaddrs */
+    real_freeifaddrs(ifa);
+}
 
 /**
  * Internal helper for libratls hooks to resolve real function pointers
