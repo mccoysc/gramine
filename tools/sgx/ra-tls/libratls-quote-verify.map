@@ -1,0 +1,51 @@
+/* Version script for libratls-quote-verify.so
+ * 
+ * This defines symbol versioning for the getifaddrs/freeifaddrs shim
+ * to support MySQL Group Replication which imports versioned symbols.
+ * 
+ * We export getifaddrs/freeifaddrs under GLIBC_2.3 version to match
+ * what MySQL GR plugin expects (getifaddrs@GLIBC_2.3).
+ * 
+ * All other symbols are exported under LIBRATLS version.
+ */
+
+GLIBC_2.3 {
+    global:
+        getifaddrs;
+        freeifaddrs;
+};
+
+LIBRATLS {
+    global:
+        /* All other symbols from libratls-quote-verify */
+        ra_tls_set_measurement_callback;
+        ratls_quota_init;
+        dlsym;
+        dlclose;
+        /* SSL/TLS hook functions */
+        SSL_CTX_set_verify;
+        SSL_set_verify;
+        SSL_CTX_set_cert_verify_callback;
+        SSL_connect;
+        SSL_accept;
+        SSL_do_handshake;
+        SSL_CTX_free;
+        SSL_free;
+        /* mbedTLS hook functions */
+        mbedtls_ssl_conf_verify;
+        mbedtls_ssl_conf_authmode;
+        mbedtls_ssl_config_defaults;
+        mbedtls_ssl_setup;
+        mbedtls_ssl_handshake;
+        mbedtls_ssl_config_free;
+        mbedtls_ssl_free;
+        /* wolfSSL hook functions */
+        wolfSSL_CTX_set_verify;
+        wolfSSL_set_verify;
+        wolfSSL_connect;
+        wolfSSL_accept;
+        wolfSSL_CTX_free;
+        wolfSSL_free;
+    local:
+        *;
+};
