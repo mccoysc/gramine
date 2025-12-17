@@ -1114,27 +1114,27 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
                                         const char* isv_prod_id, const char* isv_svn,
                                         const char* platform_instance_id,
                                         const uint8_t* cert_der, size_t cert_der_size) {
-    printf("[RA-TLS SO] Verifying measurements:\n");
+    // printf("[RA-TLS SO] Verifying measurements:\n");
 
     /* Print measurements as hex (they are binary data, not strings) */
-    print_hex("MRENCLAVE  ", (const uint8_t*)mrenclave, 32); /* sgx_measurement_t is 32 bytes */
-    print_hex("MRSIGNER   ", (const uint8_t*)mrsigner, 32);  /* sgx_measurement_t is 32 bytes */
+    // print_hex("MRENCLAVE  ", (const uint8_t*)mrenclave, 32); /* sgx_measurement_t is 32 bytes */
+    // print_hex("MRSIGNER   ", (const uint8_t*)mrsigner, 32);  /* sgx_measurement_t is 32 bytes */
 
     /* ISV_PROD_ID and ISV_SVN are uint16_t (2 bytes each) */
     uint16_t prod_id = *(const uint16_t*)isv_prod_id;
     uint16_t svn     = *(const uint16_t*)isv_svn;
-    printf("[RA-TLS SO]   ISV_PROD_ID: %u (0x%04x)\n", prod_id, prod_id);
-    printf("[RA-TLS SO]   ISV_SVN:     %u (0x%04x)\n", svn, svn);
+    // printf("[RA-TLS SO]   ISV_PROD_ID: %u (0x%04x)\n", prod_id, prod_id);
+    // printf("[RA-TLS SO]   ISV_SVN:     %u (0x%04x)\n", svn, svn);
 
     /* Print platform instance ID from callback parameter */
     if (platform_instance_id && *platform_instance_id) {
-        printf("[RA-TLS SO]   Platform instance ID: %s\n", platform_instance_id);
+        // printf("[RA-TLS SO]   Platform instance ID: %s\n", platform_instance_id);
     } else {
-        printf("[RA-TLS SO]   Platform instance ID: <not available>\n");
+        // printf("[RA-TLS SO]   Platform instance ID: <not available>\n");
     }
 
     /* Print certificate DER info */
-    printf("[RA-TLS SO]   Certificate DER size: %zu bytes\n", cert_der_size);
+    // printf("[RA-TLS SO]   Certificate DER size: %zu bytes\n", cert_der_size);
 
     /* First, call user's callback if set */
     pthread_mutex_lock(&g_user_measurements_cb_mutex);
@@ -1146,20 +1146,20 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
         int user_result = user_cb(mrenclave, mrsigner, isv_prod_id, isv_svn,
                                   platform_instance_id, cert_der, cert_der_size);
         if (user_result != 0) {
-            fprintf(stderr, "[RA-TLS SO] User measurement callback rejected by user callback: %d\n",
-                    user_result);
+            /*fprintf(stderr, "[RA-TLS SO] User measurement callback rejected by user callback: %d\n",
+                    user_result);*/
             return user_result;
         }
-        printf(
+        /*printf(
             "[RA-TLS SO] User measurement callback accepted by user callback, proceeding with "
-            "whitelist check\n");
+            "whitelist check\n");*/
     }
 
     /* If user callback passed or not set, check whitelist */
     const char* whitelist_b64 = getenv(ENV_RATLS_WHITELIST_CONFIG);
     if (!whitelist_b64 || !*whitelist_b64) {
-        printf("[RA-TLS SO] %s not set or empty, accepting connection\n",
-               ENV_RATLS_WHITELIST_CONFIG);
+        /*printf("[RA-TLS SO] %s not set or empty, accepting connection\n",
+               ENV_RATLS_WHITELIST_CONFIG);*/
         return 0;
     }
 
@@ -1299,9 +1299,9 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
 
     /* Print platform instance ID if available */
     if (platform_instance_id && *platform_instance_id) {
-        printf("[RA-TLS SO]   PLATFORM_INSTANCE_ID: %s\n", platform_instance_id);
+        // printf("[RA-TLS SO]   PLATFORM_INSTANCE_ID: %s\n", platform_instance_id);
     } else {
-        printf("[RA-TLS SO]   PLATFORM_INSTANCE_ID: not available\n");
+        // printf("[RA-TLS SO]   PLATFORM_INSTANCE_ID: not available\n");
     }
 
     int match_found = 0;
@@ -1332,7 +1332,7 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
 
         if (mrenclave_match && mrsigner_match && isv_prod_id_match && isv_svn_match &&
             platform_instance_id_match) {
-            printf("[RA-TLS SO] Measurements matched whitelist entry %d\n", i);
+            // printf("[RA-TLS SO] Measurements matched whitelist entry %d\n", i);
             match_found = 1;
             break;
         }
@@ -1354,7 +1354,7 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
         return -1;
     }
 
-    printf("[RA-TLS SO] Measurements verified successfully\n");
+    // printf("[RA-TLS SO] Measurements verified successfully\n");
     return 0;
 }
 
@@ -2044,7 +2044,7 @@ int SSL_connect(SSL* ssl) {
     }
 
     /* FORCE RA-TLS callback installation - always install regardless of previous state */
-    printf("[RA-TLS SO] Intercepted SSL_connect, FORCING RA-TLS callback installation\n");
+   // printf("[RA-TLS SO] Intercepted SSL_connect, FORCING RA-TLS callback installation\n");
 
     /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_openssl_callback_mutex);
@@ -2053,7 +2053,7 @@ int SSL_connect(SSL* ssl) {
     pthread_mutex_unlock(&g_openssl_callback_mutex);
 
     /* ALWAYS install our callback - this is the key change for forced verification */
-    printf("[RA-TLS SO] Installing RA-TLS callback before handshake (outbound connection)\n");
+    // printf("[RA-TLS SO] Installing RA-TLS callback before handshake (outbound connection)\n");
     /* Priority: user setting > environment variable */
     /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
     int mode = 0x01; /* SSL_VERIFY_PEER */
@@ -2113,7 +2113,7 @@ int SSL_accept(SSL* ssl) {
     }
 
     /* FORCE RA-TLS callback installation - always install regardless of previous state */
-    printf("[RA-TLS SO] Intercepted SSL_accept, FORCING RA-TLS callback installation\n");
+    // printf("[RA-TLS SO] Intercepted SSL_accept, FORCING RA-TLS callback installation\n");
 
     /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_openssl_callback_mutex);
@@ -2122,7 +2122,7 @@ int SSL_accept(SSL* ssl) {
     pthread_mutex_unlock(&g_openssl_callback_mutex);
 
     /* ALWAYS install our callback - this is the key change for forced verification */
-    printf("[RA-TLS SO] Installing RA-TLS callback before handshake (inbound connection)\n");
+    // printf("[RA-TLS SO] Installing RA-TLS callback before handshake (inbound connection)\n");
     /* Priority: user setting > environment variable */
     /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
     int mode = 0x01; /* SSL_VERIFY_PEER */
@@ -2182,7 +2182,7 @@ int SSL_do_handshake(SSL* ssl) {
     }
 
     /* FORCE RA-TLS callback installation - always install regardless of previous state */
-    printf("[RA-TLS SO] Intercepted SSL_do_handshake, FORCING RA-TLS callback installation\n");
+    // printf("[RA-TLS SO] Intercepted SSL_do_handshake, FORCING RA-TLS callback installation\n");
 
     /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_openssl_callback_mutex);
@@ -2191,7 +2191,7 @@ int SSL_do_handshake(SSL* ssl) {
     pthread_mutex_unlock(&g_openssl_callback_mutex);
 
     /* ALWAYS install our callback - this is the key change for forced verification */
-    printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
+    // printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
     /* Priority: user setting > environment variable */
     /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
     int mode = 0x01; /* SSL_VERIFY_PEER */
@@ -2256,7 +2256,7 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
     /* FORCE callback installation if setup succeeded */
     if (ret == 0 && conf) {
         /* FORCE RA-TLS callback installation - always install regardless of previous state */
-        printf("[RA-TLS SO] Intercepted mbedtls_ssl_setup, FORCING RA-TLS callback installation\n");
+        // printf("[RA-TLS SO] Intercepted mbedtls_ssl_setup, FORCING RA-TLS callback installation\n");
 
         /* Get user's authmode setting if available */
         pthread_mutex_lock(&g_mbedtls_callback_mutex);
@@ -2306,7 +2306,7 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
             int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
             if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
                 authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
-                printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
+                // printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
             }
             real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
         }
@@ -2343,7 +2343,7 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
     }
 
     /* FORCE RA-TLS callback installation - always install regardless of previous state */
-    printf("[RA-TLS SO] Intercepted mbedtls_ssl_handshake, FORCING RA-TLS callback installation\n");
+    // printf("[RA-TLS SO] Intercepted mbedtls_ssl_handshake, FORCING RA-TLS callback installation\n");
 
     /* Get config from ssl context using static inline accessor function (called directly) */
     /* HAVE_MBEDTLS_HEADERS is always defined - mbedtls headers are required */
@@ -2357,7 +2357,7 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
             pthread_mutex_unlock(&g_mbedtls_callback_mutex);
 
             /* ALWAYS install RA-TLS callback - this is the key change for forced verification */
-            printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
+            //printf("[RA-TLS SO] Installing RA-TLS callback before handshake\n");
 
             void (*real_conf_verify)(mbedtls_ssl_config*,
                                      int (*)(void*, mbedtls_x509_crt*, int, uint32_t*), void*);
@@ -2396,7 +2396,7 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
                 int authmode = 1; /* MBEDTLS_SSL_VERIFY_OPTIONAL - verify peer but don't fail if no cert */
                 if (user_requires_peer_cert || is_require_peer_cert_enabled()) {
                     authmode = 2; /* MBEDTLS_SSL_VERIFY_REQUIRED - peer must present valid cert */
-                    printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
+                    // printf("[RA-TLS SO] Setting mbedtls authmode to REQUIRED (mutual auth enabled)\n");
                 }
                 real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
             }
@@ -2430,7 +2430,7 @@ void* wolfSSL_CTX_new(void* method) {
 
     void* ctx = real_func(method);
     if (ctx) {
-        printf("[RA-TLS SO] Intercepted wolfSSL_CTX_new, proactively installing RA-TLS callback\n");
+        // printf("[RA-TLS SO] Intercepted wolfSSL_CTX_new, proactively installing RA-TLS callback\n");
 
         /* Check if user has already set verification mode */
         pthread_mutex_lock(&g_wolfssl_callback_mutex);
@@ -2508,7 +2508,7 @@ int wolfSSL_connect(void* ssl) {
     }
 
     /* FORCE RA-TLS callback installation - always install regardless of previous state */
-    printf("[RA-TLS SO] Intercepted wolfSSL_connect, FORCING RA-TLS callback installation\n");
+    // printf("[RA-TLS SO] Intercepted wolfSSL_connect, FORCING RA-TLS callback installation\n");
 
     /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_wolfssl_callback_mutex);
@@ -2517,7 +2517,7 @@ int wolfSSL_connect(void* ssl) {
     pthread_mutex_unlock(&g_wolfssl_callback_mutex);
 
     /* ALWAYS install our callback - this is the key change for forced verification */
-    printf("[RA-TLS SO] Installing RA-TLS callback before handshake (outbound connection)\n");
+    // printf("[RA-TLS SO] Installing RA-TLS callback before handshake (outbound connection)\n");
     /* Priority: user setting > environment variable */
     /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
     int mode = 0x01; /* SSL_VERIFY_PEER equivalent */
@@ -2575,7 +2575,7 @@ int wolfSSL_accept(void* ssl) {
     }
 
     /* FORCE RA-TLS callback installation - always install regardless of previous state */
-    printf("[RA-TLS SO] Intercepted wolfSSL_accept, FORCING RA-TLS callback installation\n");
+    // printf("[RA-TLS SO] Intercepted wolfSSL_accept, FORCING RA-TLS callback installation\n");
 
     /* Get user's verify mode preference if set */
     pthread_mutex_lock(&g_wolfssl_callback_mutex);
@@ -2584,7 +2584,7 @@ int wolfSSL_accept(void* ssl) {
     pthread_mutex_unlock(&g_wolfssl_callback_mutex);
 
     /* ALWAYS install our callback - this is the key change for forced verification */
-    printf("[RA-TLS SO] Installing RA-TLS callback before handshake (inbound connection)\n");
+    // printf("[RA-TLS SO] Installing RA-TLS callback before handshake (inbound connection)\n");
     /* Priority: user setting > environment variable */
     /* Minimum: SSL_VERIFY_PEER to ensure callback runs */
     int mode = 0x01; /* SSL_VERIFY_PEER equivalent */
@@ -2625,7 +2625,7 @@ int wolfSSL_accept(void* ssl) {
  */
 void SSL_CTX_free(SSL_CTX* ctx) {
     if (ctx) {
-        printf("[RA-TLS SO] Intercepted SSL_CTX_free, cleaning up callback tracking\n");
+        // printf("[RA-TLS SO] Intercepted SSL_CTX_free, cleaning up callback tracking\n");
         remove_openssl_ctx_callback(ctx);
     }
 
@@ -2643,7 +2643,7 @@ void SSL_CTX_free(SSL_CTX* ctx) {
  */
 void SSL_free(SSL* ssl) {
     if (ssl) {
-        printf("[RA-TLS SO] Intercepted SSL_free, cleaning up callback tracking\n");
+        // printf("[RA-TLS SO] Intercepted SSL_free, cleaning up callback tracking\n");
         remove_openssl_ssl_callback(ssl);
     }
 
@@ -2661,7 +2661,7 @@ void SSL_free(SSL* ssl) {
  */
 void mbedtls_ssl_config_free(mbedtls_ssl_config* conf) {
     if (conf) {
-        printf("[RA-TLS SO] Intercepted mbedtls_ssl_config_free, cleaning up callback tracking\n");
+        // printf("[RA-TLS SO] Intercepted mbedtls_ssl_config_free, cleaning up callback tracking\n");
         remove_mbedtls_callback(conf);
     }
 
@@ -2679,7 +2679,7 @@ void mbedtls_ssl_config_free(mbedtls_ssl_config* conf) {
  */
 void mbedtls_ssl_free(mbedtls_ssl_context* ssl) {
     if (ssl) {
-        printf("[RA-TLS SO] Intercepted mbedtls_ssl_free\n");
+        // printf("[RA-TLS SO] Intercepted mbedtls_ssl_free\n");
         /* Note: mbedtls_ssl doesn't have separate callback tracking */
     }
 
@@ -2697,7 +2697,7 @@ void mbedtls_ssl_free(mbedtls_ssl_context* ssl) {
  */
 void wolfSSL_CTX_free(void* ctx) {
     if (ctx) {
-        printf("[RA-TLS SO] Intercepted wolfSSL_CTX_free, cleaning up callback tracking\n");
+        // printf("[RA-TLS SO] Intercepted wolfSSL_CTX_free, cleaning up callback tracking\n");
         remove_wolfssl_ctx_callback(ctx);
     }
 
@@ -2715,7 +2715,7 @@ void wolfSSL_CTX_free(void* ctx) {
  */
 void wolfSSL_free(void* ssl) {
     if (ssl) {
-        printf("[RA-TLS SO] Intercepted wolfSSL_free, cleaning up callback tracking\n");
+        // printf("[RA-TLS SO] Intercepted wolfSSL_free, cleaning up callback tracking\n");
         remove_wolfssl_ssl_callback(ssl);
     }
 
@@ -3204,85 +3204,85 @@ void* dlsym(void* handle, const char* symbol) {
 
     /* Intercept RA-TLS measurement callback setter */
     if (strcmp(symbol, "ra_tls_set_measurement_callback") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)ra_tls_set_measurement_callback;
     }
 
     /* Intercept mbedTLS functions */
     if (strcmp(symbol, "mbedtls_ssl_conf_verify") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)mbedtls_ssl_conf_verify;
     }
     if (strcmp(symbol, "mbedtls_ssl_config_defaults") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)mbedtls_ssl_config_defaults;
     }
     if (strcmp(symbol, "mbedtls_ssl_setup") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)mbedtls_ssl_setup;
     }
     if (strcmp(symbol, "mbedtls_ssl_handshake") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)mbedtls_ssl_handshake;
     }
 
     /* Intercept OpenSSL functions */
     if (strcmp(symbol, "SSL_CTX_set_verify") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_CTX_set_verify;
     }
     if (strcmp(symbol, "SSL_set_verify") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_set_verify;
     }
     if (strcmp(symbol, "SSL_CTX_set_cert_verify_callback") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_CTX_set_cert_verify_callback;
     }
     if (strcmp(symbol, "SSL_CTX_new") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_CTX_new;
     }
     if (strcmp(symbol, "SSL_new") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_new;
     }
     if (strcmp(symbol, "SSL_connect") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_connect;
     }
     if (strcmp(symbol, "SSL_accept") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_accept;
     }
     if (strcmp(symbol, "SSL_do_handshake") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_do_handshake;
     }
 
     /* Intercept wolfSSL functions */
     if (strcmp(symbol, "wolfSSL_CTX_set_verify") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)wolfSSL_CTX_set_verify;
     }
     if (strcmp(symbol, "wolfSSL_set_verify") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)wolfSSL_set_verify;
     }
     if (strcmp(symbol, "wolfSSL_CTX_new") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)wolfSSL_CTX_new;
     }
     if (strcmp(symbol, "wolfSSL_new") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)wolfSSL_new;
     }
     if (strcmp(symbol, "wolfSSL_connect") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)wolfSSL_connect;
     }
     if (strcmp(symbol, "wolfSSL_accept") == 0) {
-        printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)wolfSSL_accept;
     }
 
