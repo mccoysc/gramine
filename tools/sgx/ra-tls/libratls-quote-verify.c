@@ -3200,81 +3200,93 @@ static void (*real_freeifaddrs)(struct ifaddrs* ifa) = NULL;
  * the real getifaddrs() fails because it uses netlink sockets which are not
  * supported in Gramine.
  *
+ * IMPORTANT: We check GR_LOCAL_IP FIRST before trying to resolve the real function.
+ * This is critical because in Gramine/SGX, resolving the real getifaddrs may fail
+ * (since it uses netlink), and we want to use the shim when GR_LOCAL_IP is set
+ * regardless of whether the real function can be resolved.
+ *
  * If GR_LOCAL_IP is not set, falls back to the real getifaddrs().
  */
 int getifaddrs(struct ifaddrs** ifap) {
+    /* Check if GR_LOCAL_IP environment variable is set FIRST
+     * This must be done before trying to resolve real_getifaddrs because
+     * in Gramine/SGX the real getifaddrs uses netlink which may not work,
+     * and we want to use our shim when GR_LOCAL_IP is set.
+     */
+    const char* local_ip = getenv(ENV_GR_LOCAL_IP);
+    
+    if (local_ip && local_ip[0] != '\0') {
+        /* GR_LOCAL_IP is set - use our shim implementation */
+        
+        /* Parse the IP address */
+        struct in_addr parsed_addr;
+        if (inet_pton(AF_INET, local_ip, &parsed_addr) != 1) {
+            fprintf(stderr, "[RA-TLS SO] Invalid IP address in GR_LOCAL_IP: %s\n", local_ip);
+            errno = EINVAL;
+            return -1;
+        }
+
+        printf("[RA-TLS SO] getifaddrs shim: using GR_LOCAL_IP=%s\n", local_ip);
+
+        /* Allocate our extended ifaddrs structure */
+        shim_ifaddrs_t* shim = (shim_ifaddrs_t*)calloc(1, sizeof(shim_ifaddrs_t));
+        if (!shim) {
+            errno = ENOMEM;
+            return -1;
+        }
+
+        /* Set magic number for identification in freeifaddrs */
+        shim->magic = IFADDRS_SHIM_MAGIC;
+
+        /* Set up interface name */
+        strncpy(shim->if_name, "eth0", sizeof(shim->if_name) - 1);
+        shim->ifa.ifa_name = shim->if_name;
+
+        /* Set up flags (interface is up and running) */
+        shim->ifa.ifa_flags = IFF_UP | IFF_RUNNING | IFF_BROADCAST | IFF_MULTICAST;
+
+        /* Set up address */
+        shim->addr.sin_family = AF_INET;
+        shim->addr.sin_addr = parsed_addr;
+        shim->ifa.ifa_addr = (struct sockaddr*)&shim->addr;
+
+        /* Set up netmask (255.255.255.0 = /24) */
+        shim->netmask.sin_family = AF_INET;
+        shim->netmask.sin_addr.s_addr = htonl(0xFFFFFF00);
+        shim->ifa.ifa_netmask = (struct sockaddr*)&shim->netmask;
+
+        /* No broadcast address or destination */
+        shim->ifa.ifa_broadaddr = NULL;
+        shim->ifa.ifa_dstaddr = NULL;
+
+        /* No additional data */
+        shim->ifa.ifa_data = NULL;
+
+        /* End of list */
+        shim->ifa.ifa_next = NULL;
+
+        *ifap = &shim->ifa;
+        return 0;
+    }
+    
+    /* GR_LOCAL_IP is not set - try to use real getifaddrs */
+    
     /* Resolve real getifaddrs on first call */
     if (!real_getifaddrs) {
         real_getifaddrs = (int (*)(struct ifaddrs**))ratls_real_dlsym("getifaddrs");
         if (!real_getifaddrs) {
-            fprintf(stderr, "[RA-TLS SO] Failed to resolve real getifaddrs\n");
+            fprintf(stderr, "[RA-TLS SO] Failed to resolve real getifaddrs and GR_LOCAL_IP not set\n");
             errno = ENOSYS;
             return -1;
         }
     }
 
-    /* Check if GR_LOCAL_IP environment variable is set */
-    const char* local_ip = getenv(ENV_GR_LOCAL_IP);
-    if (!local_ip || local_ip[0] == '\0') {
-        /* No GR_LOCAL_IP set, try real getifaddrs */
-        int ret = real_getifaddrs(ifap);
-        if (ret == 0) {
-            return 0;  /* Real getifaddrs succeeded */
-        }
-        /* Real getifaddrs failed, but no GR_LOCAL_IP to use as fallback */
-        printf("[RA-TLS SO] getifaddrs failed and GR_LOCAL_IP not set\n");
-        return ret;
+    /* Call real getifaddrs */
+    int ret = real_getifaddrs(ifap);
+    if (ret != 0) {
+        printf("[RA-TLS SO] real getifaddrs failed and GR_LOCAL_IP not set\n");
     }
-
-    /* Parse the IP address */
-    struct in_addr parsed_addr;
-    if (inet_pton(AF_INET, local_ip, &parsed_addr) != 1) {
-        fprintf(stderr, "[RA-TLS SO] Invalid IP address in GR_LOCAL_IP: %s\n", local_ip);
-        errno = EINVAL;
-        return -1;
-    }
-
-    printf("[RA-TLS SO] getifaddrs shim: using GR_LOCAL_IP=%s\n", local_ip);
-
-    /* Allocate our extended ifaddrs structure */
-    shim_ifaddrs_t* shim = (shim_ifaddrs_t*)calloc(1, sizeof(shim_ifaddrs_t));
-    if (!shim) {
-        errno = ENOMEM;
-        return -1;
-    }
-
-    /* Set magic number for identification in freeifaddrs */
-    shim->magic = IFADDRS_SHIM_MAGIC;
-
-    /* Set up interface name */
-    strncpy(shim->if_name, "eth0", sizeof(shim->if_name) - 1);
-    shim->ifa.ifa_name = shim->if_name;
-
-    /* Set up flags (interface is up and running) */
-    shim->ifa.ifa_flags = IFF_UP | IFF_RUNNING | IFF_BROADCAST | IFF_MULTICAST;
-
-    /* Set up address */
-    shim->addr.sin_family = AF_INET;
-    shim->addr.sin_addr = parsed_addr;
-    shim->ifa.ifa_addr = (struct sockaddr*)&shim->addr;
-
-    /* Set up netmask (255.255.255.0 = /24) */
-    shim->netmask.sin_family = AF_INET;
-    shim->netmask.sin_addr.s_addr = htonl(0xFFFFFF00);
-    shim->ifa.ifa_netmask = (struct sockaddr*)&shim->netmask;
-
-    /* No broadcast address or destination */
-    shim->ifa.ifa_broadaddr = NULL;
-    shim->ifa.ifa_dstaddr = NULL;
-
-    /* No additional data */
-    shim->ifa.ifa_data = NULL;
-
-    /* End of list */
-    shim->ifa.ifa_next = NULL;
-
-    *ifap = &shim->ifa;
-    return 0;
+    return ret;
 }
 
 /**
