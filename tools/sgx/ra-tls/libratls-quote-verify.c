@@ -3333,35 +3333,35 @@ static int create_shim_ifaddrs(const char* ip_str, struct ifaddrs** ifap) {
  * 4. Return error if all methods fail
  */
 int getifaddrs(struct ifaddrs** ifap) {
-    printf("[RA-TLS SO] getifaddrs shim: called\n");
+    fprintf(stderr, "[RA-TLS SO] getifaddrs shim: called\n");
     
     /* Step 1: Check if GR_LOCAL_IP environment variable is set */
     const char* local_ip = getenv(ENV_GR_LOCAL_IP);
     
     if (local_ip && local_ip[0] != '\0') {
-        printf("[RA-TLS SO] getifaddrs shim: using GR_LOCAL_IP=%s\n", local_ip);
+        fprintf(stderr, "[RA-TLS SO] getifaddrs shim: using GR_LOCAL_IP=%s\n", local_ip);
         return create_shim_ifaddrs(local_ip, ifap);
     }
     
-    printf("[RA-TLS SO] getifaddrs shim: GR_LOCAL_IP not set, trying UDP auto-detection\n");
+    fprintf(stderr, "[RA-TLS SO] getifaddrs shim: GR_LOCAL_IP not set, trying UDP auto-detection\n");
     
     /* Step 2: Try UDP auto-detection (use cached result if available) */
     if (!ip_detection_attempted) {
         ip_detection_attempted = 1;
         if (detect_local_ip_udp(cached_detected_ip, sizeof(cached_detected_ip)) == 0) {
-            printf("[RA-TLS SO] getifaddrs shim: UDP auto-detected IP=%s\n", cached_detected_ip);
+            fprintf(stderr, "[RA-TLS SO] getifaddrs shim: UDP auto-detected IP=%s\n", cached_detected_ip);
         } else {
-            printf("[RA-TLS SO] getifaddrs shim: UDP auto-detection failed\n");
+            fprintf(stderr, "[RA-TLS SO] getifaddrs shim: UDP auto-detection failed\n");
             cached_detected_ip[0] = '\0';  /* Mark as failed */
         }
     }
     
     if (cached_detected_ip[0] != '\0') {
-        printf("[RA-TLS SO] getifaddrs shim: using cached UDP-detected IP=%s\n", cached_detected_ip);
+        fprintf(stderr, "[RA-TLS SO] getifaddrs shim: using cached UDP-detected IP=%s\n", cached_detected_ip);
         return create_shim_ifaddrs(cached_detected_ip, ifap);
     }
     
-    printf("[RA-TLS SO] getifaddrs shim: UDP detection failed, trying real getifaddrs\n");
+    fprintf(stderr, "[RA-TLS SO] getifaddrs shim: UDP detection failed, trying real getifaddrs\n");
     
     /* Step 3: Try real getifaddrs as last resort */
     if (!real_getifaddrs) {
@@ -3375,7 +3375,7 @@ int getifaddrs(struct ifaddrs** ifap) {
 
     int ret = real_getifaddrs(ifap);
     if (ret == 0) {
-        printf("[RA-TLS SO] getifaddrs shim: real getifaddrs succeeded\n");
+        fprintf(stderr, "[RA-TLS SO] getifaddrs shim: real getifaddrs succeeded\n");
     } else {
         fprintf(stderr, "[RA-TLS SO] getifaddrs shim: real getifaddrs failed (errno=%d: %s)\n", 
                 errno, strerror(errno));
@@ -3390,10 +3390,10 @@ int getifaddrs(struct ifaddrs** ifap) {
  * or a real one from the system getifaddrs().
  */
 void freeifaddrs(struct ifaddrs* ifa) {
-    printf("[RA-TLS SO] freeifaddrs shim: called\n");
+    fprintf(stderr, "[RA-TLS SO] freeifaddrs shim: called\n");
     
     if (!ifa) {
-        printf("[RA-TLS SO] freeifaddrs shim: NULL pointer, nothing to free\n");
+        fprintf(stderr, "[RA-TLS SO] freeifaddrs shim: NULL pointer, nothing to free\n");
         return;
     }
 
@@ -3402,13 +3402,13 @@ void freeifaddrs(struct ifaddrs* ifa) {
     shim_ifaddrs_t* shim = (shim_ifaddrs_t*)ifa;
     if (shim->magic == IFADDRS_SHIM_MAGIC) {
         /* This is our fake structure, free it directly */
-        printf("[RA-TLS SO] freeifaddrs shim: freeing shim-allocated structure\n");
+        fprintf(stderr, "[RA-TLS SO] freeifaddrs shim: freeing shim-allocated structure\n");
         free(shim);
         return;
     }
 
     /* Not our structure, need to call real freeifaddrs */
-    printf("[RA-TLS SO] freeifaddrs shim: not our structure, calling real freeifaddrs\n");
+    fprintf(stderr, "[RA-TLS SO] freeifaddrs shim: not our structure, calling real freeifaddrs\n");
     
     /* Resolve real freeifaddrs on first call */
     if (!real_freeifaddrs) {
@@ -3421,6 +3421,8 @@ void freeifaddrs(struct ifaddrs* ifa) {
 
     real_freeifaddrs(ifa);
 }
+
+/* Symbol versioning for getifaddrs/freeifaddrs is handled by libratls-quote-verify.map */
 
 /**
  * Internal helper for libratls hooks to resolve real function pointers

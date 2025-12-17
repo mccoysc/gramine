@@ -167,10 +167,16 @@ if sgx_dcap_quoteverify_dep.found()
                 get_option('libdir'), get_option('libc')))
     endif
 
+    libratls_quote_verify_map = join_paths(meson.current_source_dir(), 'libratls-quote-verify.map')
+    libratls_quote_verify_link_args = [
+        '-ldl',
+        '-Wl,--version-script=@0@'.format(libratls_quote_verify_map),
+    ]
+
     libratls_quote_verify = shared_library('ratls-quote-verify',
         'libratls-quote-verify.c',
 
-        link_args: ['-ldl'],
+        link_args: libratls_quote_verify_link_args,
         link_with: [libra_tls_attest, libra_tls_verify_dcap_gramine],
         include_directories: [pal_sgx_inc, include_directories('.')],
         dependencies: [
