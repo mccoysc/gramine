@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   compile-and-commit:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     
     steps:
       - name: Checkout repository
@@ -44,9 +44,9 @@ jobs:
             
       - name: Install Intel SGX DCAP dependencies
         run: |
-          # Add Intel SGX APT repository
+          # Add Intel SGX APT repository (noble for Ubuntu 24.04)
           curl -fsSL https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | sudo gpg --dearmor -o /usr/share/keyrings/intel-sgx.gpg
-          echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/intel-sgx.gpg] https://download.01.org/intel-sgx/sgx_repo/ubuntu jammy main' | sudo tee /etc/apt/sources.list.d/intel-sgx.list
+          echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/intel-sgx.gpg] https://download.01.org/intel-sgx/sgx_repo/ubuntu noble main' | sudo tee /etc/apt/sources.list.d/intel-sgx.list
           sudo apt-get update
           
           # Install DCAP development libraries
