@@ -3930,6 +3930,13 @@ void* dlsym(void* handle, const char* symbol) {
 __attribute__((constructor)) static void ratls_quota_init(void) {
     printf("[RA-TLS SO] Initializing RA-TLS Quota Verification Library (v6)\n");
 
+    /* CRITICAL: Check and inject NODE_OPTIONS FIRST, before any other initialization.
+     * This must happen at the very beginning because:
+     * 1. Node.js statically links OpenSSL, so our LD_PRELOAD hooks cannot intercept its TLS calls
+     * 2. NODE_OPTIONS must be set before Node.js reads it during its own initialization
+     * 3. The constructor runs before main(), so this is early enough */
+    check_force_tls12();
+
     /* Note: RA_TLS_ENABLE_VERIFY and RA_TLS_REQUIRE_PEER_CERT are read in real-time */
     /* This allows dynamic configuration changes at runtime */
 
