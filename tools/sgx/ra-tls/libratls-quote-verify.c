@@ -40,6 +40,20 @@ typedef struct x509_store_ctx_st X509_STORE_CTX;
 #define ENV_RA_TLS_WHITELIST_CONFIG  "RA_TLS_WHITELIST_CONFIG"
 #define ENV_RA_TLS_ENABLE_VERIFY     "RA_TLS_ENABLE_VERIFY"
 #define ENV_RA_TLS_REQUIRE_PEER_CERT "RA_TLS_REQUIRE_PEER_CERT"
+#define ENV_RA_TLS_CERT_ALGORITHM    "RA_TLS_CERT_ALGORITHM"
+
+/* TLS version constants for OpenSSL */
+#define TLS1_VERSION    0x0301
+#define TLS1_1_VERSION  0x0302
+#define TLS1_2_VERSION  0x0303
+#define TLS1_3_VERSION  0x0304
+
+/* OpenSSL SSL_CTX_ctrl commands for protocol version */
+#define SSL_CTRL_SET_MIN_PROTO_VERSION 123
+#define SSL_CTRL_SET_MAX_PROTO_VERSION 124
+
+/* OpenSSL options for disabling TLS 1.3 */
+#define SSL_OP_NO_TLSv1_3 0x20000000U
 
 /* Default paths */
 #define DEFAULT_KEY_PATH  "/tmp/priv.key"
@@ -187,7 +201,34 @@ static inline int is_require_peer_cert_enabled(void) {
     return (val && strcmp(val, "1") == 0);
 }
 
+/**
+ * Check if TLS 1.2 restriction is needed based on certificate algorithm.
+ * secp256k1 is not supported by TLS 1.3 signature schemes, so we need to
+ * force TLS 1.2 when using secp256k1 certificates.
+ * 
+ * TLS 1.3 only defines these ECDSA signature schemes:
+ * - ecdsa_secp256r1_sha256
+ * - ecdsa_secp384r1_sha384
+ * - ecdsa_secp521r1_sha512
+ * There is NO ecdsa_secp256k1_* scheme in TLS 1.3.
+ */
+static int g_force_tls12 = -1; /* -1 = not checked, 0 = no, 1 = yes */
+static pthread_once_t g_force_tls12_once = PTHREAD_ONCE_INIT;
 
+static void check_force_tls12(void) {
+    const char* algo = getenv(ENV_RA_TLS_CERT_ALGORITHM);
+    if (algo && strcasecmp(algo, "secp256k1") == 0) {
+        g_force_tls12 = 1;
+        printf("[RA-TLS SO] Certificate algorithm is secp256k1, forcing TLS 1.2 (TLS 1.3 does not support secp256k1)\n");
+    } else {
+        g_force_tls12 = 0;
+    }
+}
+
+static inline int should_force_tls12(void) {
+    pthread_once(&g_force_tls12_once, check_force_tls12);
+    return g_force_tls12 == 1;
+}
 
 /**
  * Helper functions for callback tracking
@@ -1866,6 +1907,21 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int tran
                 }
                 real_conf_authmode(conf, authmode);
             }
+            
+            /* Force TLS 1.2 max version when secp256k1 certificate is used */
+            if (should_force_tls12()) {
+                /* mbedtls_ssl_conf_max_tls_version(conf, MBEDTLS_SSL_VERSION_TLS1_2) */
+                /* MBEDTLS_SSL_VERSION_TLS1_2 = 0x0303 */
+                void (*real_conf_max_version)(mbedtls_ssl_config*, int);
+                real_conf_max_version = ratls_real_dlsym("mbedtls_ssl_conf_max_tls_version");
+                if (!real_conf_max_version) {
+                    real_conf_max_version = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_max_tls_version");
+                }
+                if (real_conf_max_version) {
+                    real_conf_max_version(conf, 0x0303); /* MBEDTLS_SSL_VERSION_TLS1_2 */
+                    printf("[RA-TLS SO] mbedtls_ssl_config_defaults: Set max TLS version to 1.2 for secp256k1 compatibility\n");
+                }
+            }
         }
     }
     return ret;
@@ -1971,6 +2027,7 @@ void wolfSSL_set_verify(void* ssl, int mode, void* callback) {
 /**
  * OpenSSL: Intercept SSL_CTX_new - Install callback proactively
  * Always installs our RA-TLS callback (env var gating happens inside callback)
+ * Also sets TLS 1.2 max version when secp256k1 certificate is used
  */
 SSL_CTX* SSL_CTX_new(const void* method) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -1991,7 +2048,90 @@ SSL_CTX* SSL_CTX_new(const void* method) {
     }
 
     SSL_CTX* ctx = real_func(method);
+    
+    /* Force TLS 1.2 max version when secp256k1 certificate is used */
+    if (ctx && should_force_tls12()) {
+        /* Use SSL_CTX_ctrl to set max protocol version to TLS 1.2 */
+        long (*real_ctrl)(SSL_CTX*, int, long, void*);
+        real_ctrl = ratls_real_dlsym("SSL_CTX_ctrl");
+        if (!real_ctrl) {
+            real_ctrl = dlsym(RTLD_DEFAULT, "SSL_CTX_ctrl");
+        }
+        if (real_ctrl) {
+            real_ctrl(ctx, SSL_CTRL_SET_MAX_PROTO_VERSION, TLS1_2_VERSION, NULL);
+            printf("[RA-TLS SO] SSL_CTX_new: Set max TLS version to 1.2 for secp256k1 compatibility\n");
+        }
+    }
+    
     return ctx;
+}
+
+/**
+ * OpenSSL: Intercept SSL_CTX_ctrl - Clamp max TLS version to 1.2 when secp256k1 is used
+ * This intercepts SSL_CTX_set_max_proto_version which is often a macro that compiles to SSL_CTX_ctrl
+ */
+long SSL_CTX_ctrl(SSL_CTX* ctx, int cmd, long larg, void* parg) {
+    /* Resolve real function per-call using RTLD_NEXT */
+    long (*real_func)(SSL_CTX*, int, long, void*);
+    real_func = ratls_real_dlsym("SSL_CTX_ctrl");
+
+    /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols */
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "SSL_CTX_ctrl");
+        /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+        if (real_func == SSL_CTX_ctrl) {
+            real_func = NULL;
+        }
+    }
+
+    if (!real_func) {
+        return 0;
+    }
+
+    /* Clamp max protocol version to TLS 1.2 when secp256k1 is used */
+    if (should_force_tls12() && cmd == SSL_CTRL_SET_MAX_PROTO_VERSION) {
+        if (larg > TLS1_2_VERSION) {
+            printf("[RA-TLS SO] SSL_CTX_ctrl: Clamping max TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
+                   larg, TLS1_2_VERSION);
+            larg = TLS1_2_VERSION;
+        }
+    }
+
+    return real_func(ctx, cmd, larg, parg);
+}
+
+/**
+ * OpenSSL: Intercept SSL_ctrl - Clamp max TLS version to 1.2 when secp256k1 is used
+ * This intercepts SSL_set_max_proto_version which is often a macro that compiles to SSL_ctrl
+ */
+long SSL_ctrl(SSL* ssl, int cmd, long larg, void* parg) {
+    /* Resolve real function per-call using RTLD_NEXT */
+    long (*real_func)(SSL*, int, long, void*);
+    real_func = ratls_real_dlsym("SSL_ctrl");
+
+    /* Fallback to RTLD_DEFAULT for statically-linked but exported symbols */
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "SSL_ctrl");
+        /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+        if (real_func == SSL_ctrl) {
+            real_func = NULL;
+        }
+    }
+
+    if (!real_func) {
+        return 0;
+    }
+
+    /* Clamp max protocol version to TLS 1.2 when secp256k1 is used */
+    if (should_force_tls12() && cmd == SSL_CTRL_SET_MAX_PROTO_VERSION) {
+        if (larg > TLS1_2_VERSION) {
+            printf("[RA-TLS SO] SSL_ctrl: Clamping max TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
+                   larg, TLS1_2_VERSION);
+            larg = TLS1_2_VERSION;
+        }
+    }
+
+    return real_func(ssl, cmd, larg, parg);
 }
 
 /**
@@ -2409,6 +2549,7 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
 /**
  * wolfSSL: Intercept wolfSSL_CTX_new - Install callback proactively
  * Always installs our RA-TLS callback (env var gating happens inside callback)
+ * Also sets TLS 1.2 max version when secp256k1 certificate is used
  */
 void* wolfSSL_CTX_new(void* method) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2454,6 +2595,21 @@ void* wolfSSL_CTX_new(void* method) {
         g_installing_ours = 1;
         wolfSSL_CTX_set_verify(ctx, mode, ratls_wolfssl_verify_cb);
         g_installing_ours = 0;
+        
+        /* Force TLS 1.2 max version when secp256k1 certificate is used */
+        if (should_force_tls12()) {
+            /* wolfSSL_CTX_SetMaxVersion(ctx, WOLFSSL_TLSV1_2) */
+            /* WOLFSSL_TLSV1_2 = 2 */
+            int (*real_set_max_version)(void*, int);
+            real_set_max_version = ratls_real_dlsym("wolfSSL_CTX_SetMaxVersion");
+            if (!real_set_max_version) {
+                real_set_max_version = dlsym(RTLD_DEFAULT, "wolfSSL_CTX_SetMaxVersion");
+            }
+            if (real_set_max_version) {
+                real_set_max_version(ctx, 2); /* WOLFSSL_TLSV1_2 */
+                printf("[RA-TLS SO] wolfSSL_CTX_new: Set max TLS version to 1.2 for secp256k1 compatibility\n");
+            }
+        }
     }
     return ctx;
 }
@@ -3258,6 +3414,14 @@ void* dlsym(void* handle, const char* symbol) {
     if (strcmp(symbol, "SSL_do_handshake") == 0) {
         // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_do_handshake;
+    }
+    if (strcmp(symbol, "SSL_CTX_ctrl") == 0) {
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_CTX_ctrl;
+    }
+    if (strcmp(symbol, "SSL_ctrl") == 0) {
+        // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
+        return (void*)SSL_ctrl;
     }
 
     /* Intercept wolfSSL functions */
