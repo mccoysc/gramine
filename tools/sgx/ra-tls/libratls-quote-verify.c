@@ -1928,6 +1928,13 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int tran
     return ret;
 }
 
+/*
+ * NOTE: mbedtls_ssl_conf_max_tls_version and mbedtls_ssl_conf_min_tls_version
+ * are defined as static inline functions in mbedTLS headers, so they cannot be
+ * intercepted via LD_PRELOAD. TLS version enforcement for mbedTLS is handled
+ * in mbedtls_ssl_handshake() instead.
+ */
+
 /**
  * OpenSSL: Intercept SSL_CTX_set_verify
  * When RA_TLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
@@ -2089,12 +2096,22 @@ long SSL_CTX_ctrl(SSL_CTX* ctx, int cmd, long larg, void* parg) {
         return 0;
     }
 
-    /* Clamp max protocol version to TLS 1.2 when secp256k1 is used */
-    if (should_force_tls12() && cmd == SSL_CTRL_SET_MAX_PROTO_VERSION) {
-        if (larg > TLS1_2_VERSION) {
-            printf("[RA-TLS SO] SSL_CTX_ctrl: Clamping max TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
-                   larg, TLS1_2_VERSION);
-            larg = TLS1_2_VERSION;
+    /* Clamp protocol versions to TLS 1.2 when secp256k1 is used */
+    if (should_force_tls12()) {
+        if (cmd == SSL_CTRL_SET_MAX_PROTO_VERSION) {
+            /* larg == 0 means "no maximum limit" in OpenSSL, which allows TLS 1.3 */
+            if (larg == 0 || larg > TLS1_2_VERSION) {
+                printf("[RA-TLS SO] SSL_CTX_ctrl: Clamping max TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
+                       larg, TLS1_2_VERSION);
+                larg = TLS1_2_VERSION;
+            }
+        } else if (cmd == SSL_CTRL_SET_MIN_PROTO_VERSION) {
+            /* Prevent setting min version higher than TLS 1.2 */
+            if (larg > TLS1_2_VERSION) {
+                printf("[RA-TLS SO] SSL_CTX_ctrl: Clamping min TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
+                       larg, TLS1_2_VERSION);
+                larg = TLS1_2_VERSION;
+            }
         }
     }
 
@@ -2123,16 +2140,224 @@ long SSL_ctrl(SSL* ssl, int cmd, long larg, void* parg) {
         return 0;
     }
 
-    /* Clamp max protocol version to TLS 1.2 when secp256k1 is used */
-    if (should_force_tls12() && cmd == SSL_CTRL_SET_MAX_PROTO_VERSION) {
-        if (larg > TLS1_2_VERSION) {
-            printf("[RA-TLS SO] SSL_ctrl: Clamping max TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
-                   larg, TLS1_2_VERSION);
-            larg = TLS1_2_VERSION;
+    /* Clamp protocol versions to TLS 1.2 when secp256k1 is used */
+    if (should_force_tls12()) {
+        if (cmd == SSL_CTRL_SET_MAX_PROTO_VERSION) {
+            /* larg == 0 means "no maximum limit" in OpenSSL, which allows TLS 1.3 */
+            if (larg == 0 || larg > TLS1_2_VERSION) {
+                printf("[RA-TLS SO] SSL_ctrl: Clamping max TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
+                       larg, TLS1_2_VERSION);
+                larg = TLS1_2_VERSION;
+            }
+        } else if (cmd == SSL_CTRL_SET_MIN_PROTO_VERSION) {
+            /* Prevent setting min version higher than TLS 1.2 */
+            if (larg > TLS1_2_VERSION) {
+                printf("[RA-TLS SO] SSL_ctrl: Clamping min TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
+                       larg, TLS1_2_VERSION);
+                larg = TLS1_2_VERSION;
+            }
         }
     }
 
     return real_func(ssl, cmd, larg, parg);
+}
+
+/**
+ * OpenSSL: Intercept SSL_CTX_set_max_proto_version - Direct API hook
+ * This is the direct function (not macro) for setting max TLS version
+ */
+int SSL_CTX_set_max_proto_version(SSL_CTX* ctx, int version) {
+    /* Use SSL_CTX_ctrl to set the version - our SSL_CTX_ctrl hook will handle clamping */
+    long (*real_ctrl)(SSL_CTX*, int, long, void*);
+    real_ctrl = ratls_real_dlsym("SSL_CTX_ctrl");
+    if (!real_ctrl) {
+        real_ctrl = dlsym(RTLD_DEFAULT, "SSL_CTX_ctrl");
+    }
+    if (!real_ctrl) {
+        return 0;
+    }
+    
+    /* Clamp version if needed */
+    if (should_force_tls12()) {
+        if (version == 0 || version > TLS1_2_VERSION) {
+            printf("[RA-TLS SO] SSL_CTX_set_max_proto_version: Clamping from 0x%x to TLS 1.2 (0x%x) for secp256k1\n", 
+                   version, TLS1_2_VERSION);
+            version = TLS1_2_VERSION;
+        }
+    }
+    
+    return (int)real_ctrl(ctx, SSL_CTRL_SET_MAX_PROTO_VERSION, (long)version, NULL);
+}
+
+/**
+ * OpenSSL: Intercept SSL_CTX_set_min_proto_version - Direct API hook
+ */
+int SSL_CTX_set_min_proto_version(SSL_CTX* ctx, int version) {
+    long (*real_ctrl)(SSL_CTX*, int, long, void*);
+    real_ctrl = ratls_real_dlsym("SSL_CTX_ctrl");
+    if (!real_ctrl) {
+        real_ctrl = dlsym(RTLD_DEFAULT, "SSL_CTX_ctrl");
+    }
+    if (!real_ctrl) {
+        return 0;
+    }
+    
+    /* Clamp version if needed */
+    if (should_force_tls12()) {
+        if (version > TLS1_2_VERSION) {
+            printf("[RA-TLS SO] SSL_CTX_set_min_proto_version: Clamping from 0x%x to TLS 1.2 (0x%x) for secp256k1\n", 
+                   version, TLS1_2_VERSION);
+            version = TLS1_2_VERSION;
+        }
+    }
+    
+    return (int)real_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, (long)version, NULL);
+}
+
+/**
+ * OpenSSL: Intercept SSL_set_max_proto_version - Direct API hook for SSL object
+ */
+int SSL_set_max_proto_version(SSL* ssl, int version) {
+    long (*real_ctrl)(SSL*, int, long, void*);
+    real_ctrl = ratls_real_dlsym("SSL_ctrl");
+    if (!real_ctrl) {
+        real_ctrl = dlsym(RTLD_DEFAULT, "SSL_ctrl");
+    }
+    if (!real_ctrl) {
+        return 0;
+    }
+    
+    /* Clamp version if needed */
+    if (should_force_tls12()) {
+        if (version == 0 || version > TLS1_2_VERSION) {
+            printf("[RA-TLS SO] SSL_set_max_proto_version: Clamping from 0x%x to TLS 1.2 (0x%x) for secp256k1\n", 
+                   version, TLS1_2_VERSION);
+            version = TLS1_2_VERSION;
+        }
+    }
+    
+    return (int)real_ctrl(ssl, SSL_CTRL_SET_MAX_PROTO_VERSION, (long)version, NULL);
+}
+
+/**
+ * OpenSSL: Intercept SSL_set_min_proto_version - Direct API hook for SSL object
+ */
+int SSL_set_min_proto_version(SSL* ssl, int version) {
+    long (*real_ctrl)(SSL*, int, long, void*);
+    real_ctrl = ratls_real_dlsym("SSL_ctrl");
+    if (!real_ctrl) {
+        real_ctrl = dlsym(RTLD_DEFAULT, "SSL_ctrl");
+    }
+    if (!real_ctrl) {
+        return 0;
+    }
+    
+    /* Clamp version if needed */
+    if (should_force_tls12()) {
+        if (version > TLS1_2_VERSION) {
+            printf("[RA-TLS SO] SSL_set_min_proto_version: Clamping from 0x%x to TLS 1.2 (0x%x) for secp256k1\n", 
+                   version, TLS1_2_VERSION);
+            version = TLS1_2_VERSION;
+        }
+    }
+    
+    return (int)real_ctrl(ssl, SSL_CTRL_SET_MIN_PROTO_VERSION, (long)version, NULL);
+}
+
+/**
+ * OpenSSL: Intercept SSL_CTX_set_options - Add SSL_OP_NO_TLSv1_3 when secp256k1 is used
+ */
+unsigned long SSL_CTX_set_options(SSL_CTX* ctx, unsigned long options) {
+    unsigned long (*real_func)(SSL_CTX*, unsigned long);
+    real_func = ratls_real_dlsym("SSL_CTX_set_options");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "SSL_CTX_set_options");
+    }
+    if (!real_func) {
+        return 0;
+    }
+    
+    /* Force add SSL_OP_NO_TLSv1_3 when secp256k1 is used */
+    if (should_force_tls12()) {
+        if (!(options & SSL_OP_NO_TLSv1_3)) {
+            printf("[RA-TLS SO] SSL_CTX_set_options: Adding SSL_OP_NO_TLSv1_3 for secp256k1\n");
+            options |= SSL_OP_NO_TLSv1_3;
+        }
+    }
+    
+    return real_func(ctx, options);
+}
+
+/**
+ * OpenSSL: Intercept SSL_set_options - Add SSL_OP_NO_TLSv1_3 when secp256k1 is used
+ */
+unsigned long SSL_set_options(SSL* ssl, unsigned long options) {
+    unsigned long (*real_func)(SSL*, unsigned long);
+    real_func = ratls_real_dlsym("SSL_set_options");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "SSL_set_options");
+    }
+    if (!real_func) {
+        return 0;
+    }
+    
+    /* Force add SSL_OP_NO_TLSv1_3 when secp256k1 is used */
+    if (should_force_tls12()) {
+        if (!(options & SSL_OP_NO_TLSv1_3)) {
+            printf("[RA-TLS SO] SSL_set_options: Adding SSL_OP_NO_TLSv1_3 for secp256k1\n");
+            options |= SSL_OP_NO_TLSv1_3;
+        }
+    }
+    
+    return real_func(ssl, options);
+}
+
+/**
+ * OpenSSL: Intercept SSL_CTX_clear_options - Prevent clearing SSL_OP_NO_TLSv1_3 when secp256k1 is used
+ */
+unsigned long SSL_CTX_clear_options(SSL_CTX* ctx, unsigned long options) {
+    unsigned long (*real_func)(SSL_CTX*, unsigned long);
+    real_func = ratls_real_dlsym("SSL_CTX_clear_options");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "SSL_CTX_clear_options");
+    }
+    if (!real_func) {
+        return 0;
+    }
+    
+    /* Prevent clearing SSL_OP_NO_TLSv1_3 when secp256k1 is used */
+    if (should_force_tls12()) {
+        if (options & SSL_OP_NO_TLSv1_3) {
+            printf("[RA-TLS SO] SSL_CTX_clear_options: Preventing clear of SSL_OP_NO_TLSv1_3 for secp256k1\n");
+            options &= ~SSL_OP_NO_TLSv1_3;
+        }
+    }
+    
+    return real_func(ctx, options);
+}
+
+/**
+ * OpenSSL: Intercept SSL_clear_options - Prevent clearing SSL_OP_NO_TLSv1_3 when secp256k1 is used
+ */
+unsigned long SSL_clear_options(SSL* ssl, unsigned long options) {
+    unsigned long (*real_func)(SSL*, unsigned long);
+    real_func = ratls_real_dlsym("SSL_clear_options");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "SSL_clear_options");
+    }
+    if (!real_func) {
+        return 0;
+    }
+    
+    /* Prevent clearing SSL_OP_NO_TLSv1_3 when secp256k1 is used */
+    if (should_force_tls12()) {
+        if (options & SSL_OP_NO_TLSv1_3) {
+            printf("[RA-TLS SO] SSL_clear_options: Preventing clear of SSL_OP_NO_TLSv1_3 for secp256k1\n");
+            options &= ~SSL_OP_NO_TLSv1_3;
+        }
+    }
+    
+    return real_func(ssl, options);
 }
 
 /**
@@ -2227,6 +2452,19 @@ int SSL_connect(SSL* ssl) {
         pthread_mutex_unlock(&g_openssl_callback_mutex);
     }
 
+    /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
+    if (should_force_tls12()) {
+        long (*real_ctrl)(SSL*, int, long, void*);
+        real_ctrl = ratls_real_dlsym("SSL_ctrl");
+        if (!real_ctrl) {
+            real_ctrl = dlsym(RTLD_DEFAULT, "SSL_ctrl");
+        }
+        if (real_ctrl) {
+            real_ctrl(ssl, SSL_CTRL_SET_MAX_PROTO_VERSION, TLS1_2_VERSION, NULL);
+            printf("[RA-TLS SO] SSL_connect: Enforced TLS 1.2 max version before handshake for secp256k1\n");
+        }
+    }
+
     return real_func(ssl);
 }
 
@@ -2296,6 +2534,19 @@ int SSL_accept(SSL* ssl) {
         pthread_mutex_unlock(&g_openssl_callback_mutex);
     }
 
+    /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
+    if (should_force_tls12()) {
+        long (*real_ctrl)(SSL*, int, long, void*);
+        real_ctrl = ratls_real_dlsym("SSL_ctrl");
+        if (!real_ctrl) {
+            real_ctrl = dlsym(RTLD_DEFAULT, "SSL_ctrl");
+        }
+        if (real_ctrl) {
+            real_ctrl(ssl, SSL_CTRL_SET_MAX_PROTO_VERSION, TLS1_2_VERSION, NULL);
+            printf("[RA-TLS SO] SSL_accept: Enforced TLS 1.2 max version before handshake for secp256k1\n");
+        }
+    }
+
     return real_func(ssl);
 }
 
@@ -2363,6 +2614,19 @@ int SSL_do_handshake(SSL* ssl) {
             entry->installed_ours_verify = 1;
         }
         pthread_mutex_unlock(&g_openssl_callback_mutex);
+    }
+
+    /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
+    if (should_force_tls12()) {
+        long (*real_ctrl)(SSL*, int, long, void*);
+        real_ctrl = ratls_real_dlsym("SSL_ctrl");
+        if (!real_ctrl) {
+            real_ctrl = dlsym(RTLD_DEFAULT, "SSL_ctrl");
+        }
+        if (real_ctrl) {
+            real_ctrl(ssl, SSL_CTRL_SET_MAX_PROTO_VERSION, TLS1_2_VERSION, NULL);
+            printf("[RA-TLS SO] SSL_do_handshake: Enforced TLS 1.2 max version before handshake for secp256k1\n");
+        }
     }
 
     return real_func(ssl);
@@ -2541,6 +2805,19 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
                 }
                 real_conf_authmode((mbedtls_ssl_config*)conf, authmode);
             }
+            
+            /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
+            if (should_force_tls12()) {
+                void (*real_conf_max_version)(mbedtls_ssl_config*, int);
+                real_conf_max_version = ratls_real_dlsym("mbedtls_ssl_conf_max_tls_version");
+                if (!real_conf_max_version) {
+                    real_conf_max_version = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_max_tls_version");
+                }
+                if (real_conf_max_version) {
+                    real_conf_max_version((mbedtls_ssl_config*)conf, 0x0303); /* MBEDTLS_SSL_VERSION_TLS1_2 */
+                    printf("[RA-TLS SO] mbedtls_ssl_handshake: Enforced TLS 1.2 max version before handshake for secp256k1\n");
+                }
+            }
         }
     }
 
@@ -2613,6 +2890,103 @@ void* wolfSSL_CTX_new(void* method) {
         }
     }
     return ctx;
+}
+
+/**
+ * wolfSSL: Intercept wolfSSL_CTX_SetMaxVersion - Clamp to TLS 1.2 when secp256k1 is used
+ */
+int wolfSSL_CTX_SetMaxVersion(void* ctx, int version) {
+    int (*real_func)(void*, int);
+    real_func = ratls_real_dlsym("wolfSSL_CTX_SetMaxVersion");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "wolfSSL_CTX_SetMaxVersion");
+    }
+    if (!real_func) {
+        return -1;
+    }
+    
+    /* Clamp max version to TLS 1.2 when secp256k1 is used */
+    /* WOLFSSL_TLSV1_2 = 2, WOLFSSL_TLSV1_3 = 3 */
+    if (should_force_tls12()) {
+        if (version > 2) {
+            printf("[RA-TLS SO] wolfSSL_CTX_SetMaxVersion: Clamping from %d to TLS 1.2 (2) for secp256k1\n", version);
+            version = 2;
+        }
+    }
+    
+    return real_func(ctx, version);
+}
+
+/**
+ * wolfSSL: Intercept wolfSSL_SetMaxVersion - Clamp to TLS 1.2 when secp256k1 is used
+ */
+int wolfSSL_SetMaxVersion(void* ssl, int version) {
+    int (*real_func)(void*, int);
+    real_func = ratls_real_dlsym("wolfSSL_SetMaxVersion");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "wolfSSL_SetMaxVersion");
+    }
+    if (!real_func) {
+        return -1;
+    }
+    
+    /* Clamp max version to TLS 1.2 when secp256k1 is used */
+    if (should_force_tls12()) {
+        if (version > 2) {
+            printf("[RA-TLS SO] wolfSSL_SetMaxVersion: Clamping from %d to TLS 1.2 (2) for secp256k1\n", version);
+            version = 2;
+        }
+    }
+    
+    return real_func(ssl, version);
+}
+
+/**
+ * wolfSSL: Intercept wolfSSL_CTX_SetMinVersion - Clamp to TLS 1.2 when secp256k1 is used
+ */
+int wolfSSL_CTX_SetMinVersion(void* ctx, int version) {
+    int (*real_func)(void*, int);
+    real_func = ratls_real_dlsym("wolfSSL_CTX_SetMinVersion");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "wolfSSL_CTX_SetMinVersion");
+    }
+    if (!real_func) {
+        return -1;
+    }
+    
+    /* Clamp min version to TLS 1.2 when secp256k1 is used (prevent min > TLS 1.2) */
+    if (should_force_tls12()) {
+        if (version > 2) {
+            printf("[RA-TLS SO] wolfSSL_CTX_SetMinVersion: Clamping from %d to TLS 1.2 (2) for secp256k1\n", version);
+            version = 2;
+        }
+    }
+    
+    return real_func(ctx, version);
+}
+
+/**
+ * wolfSSL: Intercept wolfSSL_SetMinVersion - Clamp to TLS 1.2 when secp256k1 is used
+ */
+int wolfSSL_SetMinVersion(void* ssl, int version) {
+    int (*real_func)(void*, int);
+    real_func = ratls_real_dlsym("wolfSSL_SetMinVersion");
+    if (!real_func) {
+        real_func = dlsym(RTLD_DEFAULT, "wolfSSL_SetMinVersion");
+    }
+    if (!real_func) {
+        return -1;
+    }
+    
+    /* Clamp min version to TLS 1.2 when secp256k1 is used (prevent min > TLS 1.2) */
+    if (should_force_tls12()) {
+        if (version > 2) {
+            printf("[RA-TLS SO] wolfSSL_SetMinVersion: Clamping from %d to TLS 1.2 (2) for secp256k1\n", version);
+            version = 2;
+        }
+    }
+    
+    return real_func(ssl, version);
 }
 
 /**
@@ -2705,6 +3079,19 @@ int wolfSSL_connect(void* ssl) {
         pthread_mutex_unlock(&g_wolfssl_callback_mutex);
     }
 
+    /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
+    if (should_force_tls12()) {
+        int (*real_set_max_version)(void*, int);
+        real_set_max_version = ratls_real_dlsym("wolfSSL_SetMaxVersion");
+        if (!real_set_max_version) {
+            real_set_max_version = dlsym(RTLD_DEFAULT, "wolfSSL_SetMaxVersion");
+        }
+        if (real_set_max_version) {
+            real_set_max_version(ssl, 2); /* WOLFSSL_TLSV1_2 */
+            printf("[RA-TLS SO] wolfSSL_connect: Enforced TLS 1.2 max version before handshake for secp256k1\n");
+        }
+    }
+
     return real_func(ssl);
 }
 
@@ -2770,6 +3157,19 @@ int wolfSSL_accept(void* ssl) {
             entry->installed_ours = 1;
         }
         pthread_mutex_unlock(&g_wolfssl_callback_mutex);
+    }
+
+    /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
+    if (should_force_tls12()) {
+        int (*real_set_max_version)(void*, int);
+        real_set_max_version = ratls_real_dlsym("wolfSSL_SetMaxVersion");
+        if (!real_set_max_version) {
+            real_set_max_version = dlsym(RTLD_DEFAULT, "wolfSSL_SetMaxVersion");
+        }
+        if (real_set_max_version) {
+            real_set_max_version(ssl, 2); /* WOLFSSL_TLSV1_2 */
+            printf("[RA-TLS SO] wolfSSL_accept: Enforced TLS 1.2 max version before handshake for secp256k1\n");
+        }
     }
 
     return real_func(ssl);
@@ -3382,6 +3782,9 @@ void* dlsym(void* handle, const char* symbol) {
         // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)mbedtls_ssl_handshake;
     }
+    /* NOTE: mbedtls_ssl_conf_max_tls_version and mbedtls_ssl_conf_min_tls_version
+     * are static inline functions in mbedTLS headers and cannot be intercepted.
+     * TLS version enforcement for mbedTLS is handled in mbedtls_ssl_handshake(). */
 
     /* Intercept OpenSSL functions */
     if (strcmp(symbol, "SSL_CTX_set_verify") == 0) {
@@ -3424,6 +3827,32 @@ void* dlsym(void* handle, const char* symbol) {
         // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)SSL_ctrl;
     }
+    /* OpenSSL TLS version direct API hooks */
+    if (strcmp(symbol, "SSL_CTX_set_max_proto_version") == 0) {
+        return (void*)SSL_CTX_set_max_proto_version;
+    }
+    if (strcmp(symbol, "SSL_CTX_set_min_proto_version") == 0) {
+        return (void*)SSL_CTX_set_min_proto_version;
+    }
+    if (strcmp(symbol, "SSL_set_max_proto_version") == 0) {
+        return (void*)SSL_set_max_proto_version;
+    }
+    if (strcmp(symbol, "SSL_set_min_proto_version") == 0) {
+        return (void*)SSL_set_min_proto_version;
+    }
+    /* OpenSSL options hooks */
+    if (strcmp(symbol, "SSL_CTX_set_options") == 0) {
+        return (void*)SSL_CTX_set_options;
+    }
+    if (strcmp(symbol, "SSL_set_options") == 0) {
+        return (void*)SSL_set_options;
+    }
+    if (strcmp(symbol, "SSL_CTX_clear_options") == 0) {
+        return (void*)SSL_CTX_clear_options;
+    }
+    if (strcmp(symbol, "SSL_clear_options") == 0) {
+        return (void*)SSL_clear_options;
+    }
 
     /* Intercept wolfSSL functions */
     if (strcmp(symbol, "wolfSSL_CTX_set_verify") == 0) {
@@ -3449,6 +3878,19 @@ void* dlsym(void* handle, const char* symbol) {
     if (strcmp(symbol, "wolfSSL_accept") == 0) {
         // printf("[RA-TLS SO] Intercepted dlsym lookup for %s\n", symbol);
         return (void*)wolfSSL_accept;
+    }
+    /* wolfSSL TLS version hooks */
+    if (strcmp(symbol, "wolfSSL_CTX_SetMaxVersion") == 0) {
+        return (void*)wolfSSL_CTX_SetMaxVersion;
+    }
+    if (strcmp(symbol, "wolfSSL_SetMaxVersion") == 0) {
+        return (void*)wolfSSL_SetMaxVersion;
+    }
+    if (strcmp(symbol, "wolfSSL_CTX_SetMinVersion") == 0) {
+        return (void*)wolfSSL_CTX_SetMinVersion;
+    }
+    if (strcmp(symbol, "wolfSSL_SetMinVersion") == 0) {
+        return (void*)wolfSSL_SetMinVersion;
     }
 
     /* Pass through all other symbols */
