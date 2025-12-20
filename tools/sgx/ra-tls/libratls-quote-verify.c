@@ -221,6 +221,33 @@ static void check_force_tls12(void) {
     if (algo && strcasecmp(algo, "secp256k1") == 0) {
         g_force_tls12 = 1;
         printf("[RA-TLS SO] Certificate algorithm is secp256k1, forcing TLS 1.2 (TLS 1.3 does not support secp256k1)\n");
+        
+        /* Inject NODE_OPTIONS to force TLS 1.2 for Node.js applications.
+         * This is necessary because Node.js statically links OpenSSL, so our
+         * LD_PRELOAD hooks cannot intercept its TLS version settings.
+         * By setting NODE_OPTIONS=--tls-max-v1.2, we force Node.js to use TLS 1.2
+         * without requiring application code changes or Node.js recompilation. */
+        const char* existing_node_options = getenv("NODE_OPTIONS");
+        if (existing_node_options) {
+            /* Check if --tls-max-v1.2 is already set */
+            if (strstr(existing_node_options, "--tls-max-v1.2") == NULL) {
+                /* Append to existing NODE_OPTIONS */
+                size_t new_len = strlen(existing_node_options) + strlen(" --tls-max-v1.2") + 1;
+                char* new_options = malloc(new_len);
+                if (new_options) {
+                    snprintf(new_options, new_len, "%s --tls-max-v1.2", existing_node_options);
+                    setenv("NODE_OPTIONS", new_options, 1);
+                    printf("[RA-TLS SO] Appended --tls-max-v1.2 to NODE_OPTIONS for secp256k1 compatibility\n");
+                    free(new_options);
+                }
+            } else {
+                printf("[RA-TLS SO] NODE_OPTIONS already contains --tls-max-v1.2\n");
+            }
+        } else {
+            /* Set NODE_OPTIONS */
+            setenv("NODE_OPTIONS", "--tls-max-v1.2", 1);
+            printf("[RA-TLS SO] Set NODE_OPTIONS=--tls-max-v1.2 for secp256k1 compatibility\n");
+        }
     } else {
         g_force_tls12 = 0;
     }
