@@ -1,3 +1,4 @@
+/* RA-TLS Quote Verification Library - Build trigger: 2025-12-20 */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
