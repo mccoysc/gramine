@@ -133,7 +133,7 @@ Gramine 提供 ``libratls-quote-verify.so`` 用于通过 LD_PRELOAD 进行透明
 
 - 将库添加到 ``sgx.trusted_files``
 - 将 ``loader.env.LD_PRELOAD`` 设置为库路径
-- 设置 ``loader.env.RATLS_ENABLE_VERIFY=1``
+- 设置 ``loader.env.RA_TLS_ENABLE_VERIFY=1``
 - 创建必要的 ``fs.mounts`` 条目
 
 **手动配置**
@@ -143,7 +143,7 @@ Gramine 提供 ``libratls-quote-verify.so`` 用于通过 LD_PRELOAD 进行透明
     sgx.remote_attestation = "dcap"
     
     loader.env.LD_PRELOAD = "/usr/local/lib/x86_64-linux-gnu/libratls-quote-verify.so"
-    loader.env.RATLS_ENABLE_VERIFY = "1"
+    loader.env.RA_TLS_ENABLE_VERIFY = "1"
     
     sgx.trusted_files = [
         "file:/usr/local/lib/x86_64-linux-gnu/libratls-quote-verify.so",
@@ -163,11 +163,11 @@ Gramine 提供 ``libratls-quote-verify.so`` 用于通过 LD_PRELOAD 进行透明
 
 **LD_PRELOAD 库（libratls-quote-verify.so）**
 
-- ``RATLS_ENABLE_VERIFY`` - 启用 RA-TLS quote 验证（设置为 ``1``）
-- ``RATLS_REQUIRE_PEER_CERT`` - 在 TLS 握手期间要求对等证书
-- ``RATLS_KEY_PATH`` - 私钥文件路径（默认：``/tmp/priv.key``）
-- ``RATLS_CERT_PATH`` - 证书文件路径（默认：``/tmp/crt.crt``）
-- ``RATLS_WHITELIST_CONFIG`` - SGX 测量值白名单的 Base64 编码 CSV 格式（5 行：MRENCLAVE、MRSIGNER、ISV_PROD_ID、ISV_SVN、PLATFORM_INSTANCE_ID）。每行包含逗号分隔的十六进制值。空行或 ``0`` 标记作为通配符。十六进制比较不区分大小写。
+- ``RA_TLS_ENABLE_VERIFY`` - 启用 RA-TLS quote 验证（设置为 ``1``）
+- ``RA_TLS_REQUIRE_PEER_CERT`` - 在 TLS 握手期间要求对等证书
+- ``RA_TLS_KEY_PATH`` - 私钥文件路径（默认：``/tmp/priv.key``）
+- ``RA_TLS_CERT_PATH`` - 证书文件路径（默认：``/tmp/crt.crt``）
+- ``RA_TLS_WHITELIST_CONFIG`` - SGX 测量值白名单的 Base64 编码 CSV 格式（5 行：MRENCLAVE、MRSIGNER、ISV_PROD_ID、ISV_SVN、PLATFORM_INSTANCE_ID）。每行包含逗号分隔的十六进制值。空行或 ``0`` 标记作为通配符。十六进制比较不区分大小写。
 
 **验证库（ra_tls_verify_dcap.so）**
 
@@ -196,7 +196,7 @@ SGX 测量值验证：
 --------
 
 - **验证失败不会退出进程**：即使 RA-TLS 验证失败，应用程序也会继续运行。这允许在没有正确 SGX 配置的环境中进行测试。
-- **构造函数日志始终出现**：无论 ``RATLS_ENABLE_VERIFY`` 设置如何，都会打印库初始化日志。环境变量仅控制 TLS 握手期间的验证行为。
+- **构造函数日志始终出现**：无论 ``RA_TLS_ENABLE_VERIFY`` 设置如何，都会打印库初始化日志。环境变量仅控制 TLS 握手期间的验证行为。
 - **默认情况下不自动注入**：您必须显式设置 ``GRAMINE_LD_PRELOAD`` 或在清单中手动配置 LD_PRELOAD。
 
 更多信息

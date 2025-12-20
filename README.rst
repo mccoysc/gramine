@@ -151,7 +151,7 @@ This automatically:
 
 - Adds the library to ``sgx.trusted_files``
 - Sets ``loader.env.LD_PRELOAD`` to the library path
-- Sets ``loader.env.RATLS_ENABLE_VERIFY=1``
+- Sets ``loader.env.RA_TLS_ENABLE_VERIFY=1``
 - Creates necessary ``fs.mounts`` entries
 
 **Manual Configuration**
@@ -161,7 +161,7 @@ Alternatively, configure LD_PRELOAD manually in your manifest template::
     sgx.remote_attestation = "dcap"
     
     loader.env.LD_PRELOAD = "/usr/local/lib/x86_64-linux-gnu/libratls-quote-verify.so"
-    loader.env.RATLS_ENABLE_VERIFY = "1"
+    loader.env.RA_TLS_ENABLE_VERIFY = "1"
     
     sgx.trusted_files = [
         "file:/usr/local/lib/x86_64-linux-gnu/libratls-quote-verify.so",
@@ -181,11 +181,11 @@ Environment Variables
 
 **LD_PRELOAD Library (libratls-quote-verify.so)**
 
-- ``RATLS_ENABLE_VERIFY`` - Enable RA-TLS quote verification (set to ``1``)
-- ``RATLS_REQUIRE_PEER_CERT`` - Require peer certificates during TLS handshakes
-- ``RATLS_KEY_PATH`` - Path to private key file (default: ``/tmp/priv.key``)
-- ``RATLS_CERT_PATH`` - Path to certificate file (default: ``/tmp/crt.crt``)
-- ``RATLS_WHITELIST_CONFIG`` - Base64-encoded CSV whitelist for SGX measurements (5 lines: MRENCLAVE, MRSIGNER, ISV_PROD_ID, ISV_SVN, PLATFORM_INSTANCE_ID). Each line contains comma-separated hex values. Empty lines or ``0`` tokens act as wildcards. Hex comparison is case-insensitive.
+- ``RA_TLS_ENABLE_VERIFY`` - Enable RA-TLS quote verification (set to ``1``)
+- ``RA_TLS_REQUIRE_PEER_CERT`` - Require peer certificates during TLS handshakes
+- ``RA_TLS_KEY_PATH`` - Path to private key file (default: ``/tmp/priv.key``)
+- ``RA_TLS_CERT_PATH`` - Path to certificate file (default: ``/tmp/crt.crt``)
+- ``RA_TLS_WHITELIST_CONFIG`` - Base64-encoded CSV whitelist for SGX measurements (5 lines: MRENCLAVE, MRSIGNER, ISV_PROD_ID, ISV_SVN, PLATFORM_INSTANCE_ID). Each line contains comma-separated hex values. Empty lines or ``0`` tokens act as wildcards. Hex comparison is case-insensitive.
 
 **Verification Library (ra_tls_verify_dcap.so)**
 
@@ -214,7 +214,7 @@ Important Notes
 ---------------
 
 - **Verification failures do not exit the process**: Even if RA-TLS verification fails, the application continues running. This allows testing in environments without proper SGX configuration.
-- **Constructor logs always appear**: The library initialization logs are printed regardless of ``RATLS_ENABLE_VERIFY`` setting. Environment variables only control verification behavior during TLS handshakes.
+- **Constructor logs always appear**: The library initialization logs are printed regardless of ``RA_TLS_ENABLE_VERIFY`` setting. Environment variables only control verification behavior during TLS handshakes.
 - **No auto-injection by default**: You must explicitly set ``GRAMINE_LD_PRELOAD`` or manually configure LD_PRELOAD in your manifest.
 
 For More Information
