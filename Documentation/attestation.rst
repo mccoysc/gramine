@@ -374,26 +374,26 @@ was successfully loaded.
 The library uses the following environment variables to control verification
 behavior:
 
-- ``RATLS_ENABLE_VERIFY`` (optional) -- set to ``1`` or ``true`` to enable
+- ``RA_TLS_ENABLE_VERIFY`` (optional) -- set to ``1`` or ``true`` to enable
   RA-TLS quote verification during TLS handshakes. When not set or set to ``0``,
   the library loads but does not perform verification (passthrough mode).
 
-- ``RATLS_REQUIRE_PEER_CERT`` (optional) -- set to ``1`` to require peer
+- ``RA_TLS_REQUIRE_PEER_CERT`` (optional) -- set to ``1`` to require peer
   certificates during TLS handshakes. By default, peer certificates are optional.
 
-- ``RATLS_KEY_PATH`` (optional) -- path to the private key file for TLS
+- ``RA_TLS_KEY_PATH`` (optional) -- path to the private key file for TLS
   connections. If not specified, the library uses default key locations.
 
-- ``RATLS_CERT_PATH`` (optional) -- path to the certificate file for TLS
+- ``RA_TLS_CERT_PATH`` (optional) -- path to the certificate file for TLS
   connections. If not specified, the library uses default certificate locations.
 
-- ``RATLS_WHITELIST_CONFIG`` (optional) -- path to a JSON configuration file
+- ``RA_TLS_WHITELIST_CONFIG`` (optional) -- path to a JSON configuration file
   specifying SGX measurement whitelists for verification. This allows fine-grained
   control over which enclaves are trusted.
 
 **Verification Behavior**:
 
-When ``RATLS_ENABLE_VERIFY`` is enabled, the library intercepts TLS handshakes
+When ``RA_TLS_ENABLE_VERIFY`` is enabled, the library intercepts TLS handshakes
 and extracts SGX quotes from X.509 certificates. It then verifies these quotes
 using the same environment variables as ``ra_tls_verify_dcap.so``
 (``RA_TLS_MRSIGNER``, ``RA_TLS_MRENCLAVE``, ``RA_TLS_ISV_PROD_ID``,

@@ -354,7 +354,7 @@ class Manifest:
             manifest['loader']['env']['RA_TLS_ALLOW_OUTDATED_TCB_INSECURE'] = '1'
             manifest['loader']['env']['RA_TLS_ALLOW_HW_CONFIG_NEEDED'] = '1'
             manifest['loader']['env']['RA_TLS_ALLOW_SW_HARDENING_NEEDED'] = '1'
-            manifest['loader']['env']['RATLS_ENABLE_VERIFY'] = '1'
+            manifest['loader']['env']['RA_TLS_ENABLE_VERIFY'] = '1'
 
             # add mount point for preload in fs.mount
             if not 'fs' in manifest:

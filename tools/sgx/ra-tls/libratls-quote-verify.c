@@ -35,11 +35,11 @@ typedef struct x509_store_ctx_st X509_STORE_CTX;
 #include "ra_tls.h"
 
 /* Environment variable names */
-#define ENV_RATLS_KEY_PATH          "RATLS_KEY_PATH"
-#define ENV_RATLS_CERT_PATH         "RATLS_CERT_PATH"
-#define ENV_RATLS_WHITELIST_CONFIG  "RATLS_WHITELIST_CONFIG"
-#define ENV_RATLS_ENABLE_VERIFY     "RATLS_ENABLE_VERIFY"
-#define ENV_RATLS_REQUIRE_PEER_CERT "RATLS_REQUIRE_PEER_CERT"
+#define ENV_RA_TLS_KEY_PATH          "RA_TLS_KEY_PATH"
+#define ENV_RA_TLS_CERT_PATH         "RA_TLS_CERT_PATH"
+#define ENV_RA_TLS_WHITELIST_CONFIG  "RA_TLS_WHITELIST_CONFIG"
+#define ENV_RA_TLS_ENABLE_VERIFY     "RA_TLS_ENABLE_VERIFY"
+#define ENV_RA_TLS_REQUIRE_PEER_CERT "RA_TLS_REQUIRE_PEER_CERT"
 
 /* Default paths */
 #define DEFAULT_KEY_PATH  "/tmp/priv.key"
@@ -178,12 +178,12 @@ static int extract_quote_from_cert_der(const uint8_t* cert_der, size_t cert_der_
  * Helper functions to read environment variables in real-time
  */
 static inline int is_ratls_enabled(void) {
-    const char* val = getenv(ENV_RATLS_ENABLE_VERIFY);
+    const char* val = getenv(ENV_RA_TLS_ENABLE_VERIFY);
     return (val && strcmp(val, "1") == 0);
 }
 
 static inline int is_require_peer_cert_enabled(void) {
-    const char* val = getenv(ENV_RATLS_REQUIRE_PEER_CERT);
+    const char* val = getenv(ENV_RA_TLS_REQUIRE_PEER_CERT);
     return (val && strcmp(val, "1") == 0);
 }
 
@@ -664,17 +664,17 @@ static int generate_ratls_credentials(void) {
 
     printf("[RA-TLS SO] Generating RA-TLS credentials...\n");
 
-    const char* key_path  = getenv(ENV_RATLS_KEY_PATH);
-    const char* cert_path = getenv(ENV_RATLS_CERT_PATH);
+    const char* key_path  = getenv(ENV_RA_TLS_KEY_PATH);
+    const char* cert_path = getenv(ENV_RA_TLS_CERT_PATH);
 
     if (!key_path) {
         key_path = DEFAULT_KEY_PATH;
-        printf("[RA-TLS SO] %s not set, using default: %s\n", ENV_RATLS_KEY_PATH, key_path);
+        printf("[RA-TLS SO] %s not set, using default: %s\n", ENV_RA_TLS_KEY_PATH, key_path);
     }
 
     if (!cert_path) {
         cert_path = DEFAULT_CERT_PATH;
-        printf("[RA-TLS SO] %s not set, using default: %s\n", ENV_RATLS_CERT_PATH, cert_path);
+        printf("[RA-TLS SO] %s not set, using default: %s\n", ENV_RA_TLS_CERT_PATH, cert_path);
     }
     ret = ra_tls_create_key_and_crt_der(&key_der, &key_der_size, &crt_der, &crt_der_size);
     if (ret < 0) {
@@ -721,21 +721,21 @@ static int generate_ratls_credentials(void) {
         fprintf(stderr, "[RA-TLS SO] Failed to write cert to PEM:%s\n", cert_path);
         goto err;
     }
-    if (setenv(ENV_RATLS_KEY_PATH, key_path, 0) < 0) {
-        fprintf(stderr, "[RA-TLS SO] Failed to set %s env variable\n", ENV_RATLS_KEY_PATH);
+    if (setenv(ENV_RA_TLS_KEY_PATH, key_path, 0) < 0) {
+        fprintf(stderr, "[RA-TLS SO] Failed to set %s env variable\n", ENV_RA_TLS_KEY_PATH);
     } else {
-        printf("[RA-TLS SO] Set %s env variable to %s\n", ENV_RATLS_KEY_PATH, key_path);
+        printf("[RA-TLS SO] Set %s env variable to %s\n", ENV_RA_TLS_KEY_PATH, key_path);
     }
-    if (setenv(ENV_RATLS_CERT_PATH, cert_path, 0) < 0) {
-        fprintf(stderr, "[RA-TLS SO] Failed to set %s env variable\n", ENV_RATLS_CERT_PATH);
+    if (setenv(ENV_RA_TLS_CERT_PATH, cert_path, 0) < 0) {
+        fprintf(stderr, "[RA-TLS SO] Failed to set %s env variable\n", ENV_RA_TLS_CERT_PATH);
     } else {
-        printf("[RA-TLS SO] Set %s env variable to %s\n", ENV_RATLS_CERT_PATH, cert_path);
+        printf("[RA-TLS SO] Set %s env variable to %s\n", ENV_RA_TLS_CERT_PATH, cert_path);
     }
     printf("[RA-TLS SO] Saved certificate: %s\n", cert_path);
 
     /* Verify the generated certificate using the in-memory DER buffer */
-    /* Only perform self-verification if RATLS_ENABLE_VERIFY is set */
-    const char* ratls_enable = getenv(ENV_RATLS_ENABLE_VERIFY);
+    /* Only perform self-verification if RA_TLS_ENABLE_VERIFY is set */
+    const char* ratls_enable = getenv(ENV_RA_TLS_ENABLE_VERIFY);
     if (ratls_enable && strcmp(ratls_enable, "1") == 0) {
         /* Extract platform instance ID from quote before running RA-TLS verification */
 
@@ -762,7 +762,7 @@ static int generate_ratls_credentials(void) {
         }
     } else {
         printf(
-            "[RA-TLS SO] Skipping certificate verification (RATLS_ENABLE_VERIFY not set to 1)\n");
+            "[RA-TLS SO] Skipping certificate verification (RA_TLS_ENABLE_VERIFY not set to 1)\n");
     }
 
     /* Free the in-memory certificate data */
@@ -1156,10 +1156,10 @@ static int verify_measurements_callback(const char* mrenclave, const char* mrsig
     }
 
     /* If user callback passed or not set, check whitelist */
-    const char* whitelist_b64 = getenv(ENV_RATLS_WHITELIST_CONFIG);
+    const char* whitelist_b64 = getenv(ENV_RA_TLS_WHITELIST_CONFIG);
     if (!whitelist_b64 || !*whitelist_b64) {
         /*printf("[RA-TLS SO] %s not set or empty, accepting connection\n",
-               ENV_RATLS_WHITELIST_CONFIG);*/
+               ENV_RA_TLS_WHITELIST_CONFIG);*/
         return 0;
     }
 
@@ -1774,8 +1774,8 @@ static void init_ratls_verify(void) {
  */
 /**
  * mbedTLS: Intercept mbedtls_ssl_conf_verify
- * When RATLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
- * When RATLS_ENABLE_VERIFY=0: passthrough
+ * When RA_TLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
+ * When RA_TLS_ENABLE_VERIFY=0: passthrough
  */
 void mbedtls_ssl_conf_verify(mbedtls_ssl_config* conf,
                              int (*f_vrfy)(void*, mbedtls_x509_crt*, int, uint32_t*),
@@ -1832,7 +1832,7 @@ void mbedtls_ssl_conf_authmode(mbedtls_ssl_config* conf, int authmode) {
 /**
  * mbedTLS: Intercept mbedtls_ssl_config_defaults
  * Resolves real function per-call using RTLD_NEXT for correct dispatch
- * Sets authmode based on user setting or RATLS_REQUIRE_PEER_CERT environment variable
+ * Sets authmode based on user setting or RA_TLS_REQUIRE_PEER_CERT environment variable
  * Priority: user setting > environment variable (consistent with OpenSSL/wolfSSL)
  */
 int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int transport, int preset) {
@@ -1873,8 +1873,8 @@ int mbedtls_ssl_config_defaults(mbedtls_ssl_config* conf, int endpoint, int tran
 
 /**
  * OpenSSL: Intercept SSL_CTX_set_verify
- * When RATLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
- * When RATLS_ENABLE_VERIFY=0: passthrough
+ * When RA_TLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
+ * When RA_TLS_ENABLE_VERIFY=0: passthrough
  */
 void SSL_CTX_set_verify(SSL_CTX* ctx, int mode, int (*callback)(int, X509_STORE_CTX*)) {
     /* Store-only wrapper: just save user callback, don't call real function */
@@ -1892,8 +1892,8 @@ void SSL_CTX_set_verify(SSL_CTX* ctx, int mode, int (*callback)(int, X509_STORE_
 
 /**
  * OpenSSL: Intercept SSL_set_verify
- * When RATLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
- * When RATLS_ENABLE_VERIFY=0: passthrough
+ * When RA_TLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
+ * When RA_TLS_ENABLE_VERIFY=0: passthrough
  */
 void SSL_set_verify(SSL* ssl, int mode, int (*callback)(int, X509_STORE_CTX*)) {
     /* Store-only wrapper: just save user callback, don't call real function */
@@ -1911,8 +1911,8 @@ void SSL_set_verify(SSL* ssl, int mode, int (*callback)(int, X509_STORE_CTX*)) {
 
 /**
  * OpenSSL: Intercept SSL_CTX_set_cert_verify_callback
- * When RATLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
- * When RATLS_ENABLE_VERIFY=0: passthrough
+ * When RA_TLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
+ * When RA_TLS_ENABLE_VERIFY=0: passthrough
  */
 void SSL_CTX_set_cert_verify_callback(SSL_CTX* ctx, int (*cb)(X509_STORE_CTX*, void*), void* arg) {
     /* Store-only wrapper: just save user callback, don't call real function */
@@ -1930,8 +1930,8 @@ void SSL_CTX_set_cert_verify_callback(SSL_CTX* ctx, int (*cb)(X509_STORE_CTX*, v
 
 /**
  * wolfSSL: Intercept wolfSSL_CTX_set_verify
- * When RATLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
- * When RATLS_ENABLE_VERIFY=0: passthrough
+ * When RA_TLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
+ * When RA_TLS_ENABLE_VERIFY=0: passthrough
  */
 void wolfSSL_CTX_set_verify(void* ctx, int mode, void* callback) {
     /* Store-only wrapper: just save user callback, don't call real function */
@@ -1949,8 +1949,8 @@ void wolfSSL_CTX_set_verify(void* ctx, int mode, void* callback) {
 
 /**
  * wolfSSL: Intercept wolfSSL_set_verify
- * When RATLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
- * When RATLS_ENABLE_VERIFY=0: passthrough
+ * When RA_TLS_ENABLE_VERIFY=1: stores user callback and installs our wrapper
+ * When RA_TLS_ENABLE_VERIFY=0: passthrough
  */
 void wolfSSL_set_verify(void* ssl, int mode, void* callback) {
     /* Store-only wrapper: just save user callback, don't call real function */
@@ -2231,7 +2231,7 @@ int SSL_do_handshake(SSL* ssl) {
  * mbedTLS: Intercept mbedtls_ssl_setup - Force callback installation
  * ALWAYS installs our RA-TLS callback to ensure verification is performed
  * (env var gating happens inside callback)
- * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
+ * Sets authmode based on RA_TLS_REQUIRE_PEER_CERT environment variable for mutual authentication
  */
 int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) {
     /* Resolve real function per-call using RTLD_NEXT */
@@ -2318,7 +2318,7 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
  * mbedTLS: Intercept mbedtls_ssl_handshake - Force callback installation before handshake
  * ALWAYS installs our RA-TLS callback to ensure verification is performed
  * (env var gating happens inside callback)
- * Sets authmode based on RATLS_REQUIRE_PEER_CERT environment variable for mutual authentication
+ * Sets authmode based on RA_TLS_REQUIRE_PEER_CERT environment variable for mutual authentication
  *
  * Note: mbedtls_ssl_context_get_config() is a static inline function in mbedtls/ssl.h,
  * so we call it directly (requires HAVE_MBEDTLS_HEADERS). This couples the .so to the
@@ -3296,7 +3296,7 @@ void* dlsym(void* handle, const char* symbol) {
 __attribute__((constructor)) static void ratls_quota_init(void) {
     printf("[RA-TLS SO] Initializing RA-TLS Quota Verification Library (v6)\n");
 
-    /* Note: RATLS_ENABLE_VERIFY and RATLS_REQUIRE_PEER_CERT are read in real-time */
+    /* Note: RA_TLS_ENABLE_VERIFY and RA_TLS_REQUIRE_PEER_CERT are read in real-time */
     /* This allows dynamic configuration changes at runtime */
 
     /* Initialize RA-TLS verification library */
