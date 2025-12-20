@@ -2091,7 +2091,8 @@ long SSL_CTX_ctrl(SSL_CTX* ctx, int cmd, long larg, void* parg) {
 
     /* Clamp max protocol version to TLS 1.2 when secp256k1 is used */
     if (should_force_tls12() && cmd == SSL_CTRL_SET_MAX_PROTO_VERSION) {
-        if (larg > TLS1_2_VERSION) {
+        /* larg == 0 means "no maximum limit" in OpenSSL, which allows TLS 1.3 */
+        if (larg == 0 || larg > TLS1_2_VERSION) {
             printf("[RA-TLS SO] SSL_CTX_ctrl: Clamping max TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
                    larg, TLS1_2_VERSION);
             larg = TLS1_2_VERSION;
@@ -2125,7 +2126,8 @@ long SSL_ctrl(SSL* ssl, int cmd, long larg, void* parg) {
 
     /* Clamp max protocol version to TLS 1.2 when secp256k1 is used */
     if (should_force_tls12() && cmd == SSL_CTRL_SET_MAX_PROTO_VERSION) {
-        if (larg > TLS1_2_VERSION) {
+        /* larg == 0 means "no maximum limit" in OpenSSL, which allows TLS 1.3 */
+        if (larg == 0 || larg > TLS1_2_VERSION) {
             printf("[RA-TLS SO] SSL_ctrl: Clamping max TLS version from 0x%lx to TLS 1.2 (0x%x) for secp256k1\n", 
                    larg, TLS1_2_VERSION);
             larg = TLS1_2_VERSION;
