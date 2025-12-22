@@ -2459,6 +2459,10 @@ int SSL_connect(SSL* ssl) {
     real_set_verify = ratls_real_dlsym("SSL_set_verify");
     if (!real_set_verify) {
         real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+        /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+        if (real_set_verify == SSL_set_verify) {
+            real_set_verify = NULL;
+        }
     }
     if (real_set_verify) {
         real_set_verify(ssl, mode, ratls_openssl_verify_cb);
@@ -2477,6 +2481,8 @@ int SSL_connect(SSL* ssl) {
             entry->installed_ours_verify = 1;
         }
         pthread_mutex_unlock(&g_openssl_callback_mutex);
+    } else {
+        fprintf(stderr, "[RA-TLS SO] WARNING: Failed to resolve real SSL_set_verify in SSL_connect\n");
     }
 
     /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
@@ -2541,6 +2547,10 @@ int SSL_accept(SSL* ssl) {
     real_set_verify = ratls_real_dlsym("SSL_set_verify");
     if (!real_set_verify) {
         real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+        /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+        if (real_set_verify == SSL_set_verify) {
+            real_set_verify = NULL;
+        }
     }
     if (real_set_verify) {
         real_set_verify(ssl, mode, ratls_openssl_verify_cb);
@@ -2559,6 +2569,8 @@ int SSL_accept(SSL* ssl) {
             entry->installed_ours_verify = 1;
         }
         pthread_mutex_unlock(&g_openssl_callback_mutex);
+    } else {
+        fprintf(stderr, "[RA-TLS SO] WARNING: Failed to resolve real SSL_set_verify in SSL_accept\n");
     }
 
     /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
@@ -2623,6 +2635,10 @@ int SSL_do_handshake(SSL* ssl) {
     real_set_verify = ratls_real_dlsym("SSL_set_verify");
     if (!real_set_verify) {
         real_set_verify = dlsym(RTLD_DEFAULT, "SSL_set_verify");
+        /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+        if (real_set_verify == SSL_set_verify) {
+            real_set_verify = NULL;
+        }
     }
     if (real_set_verify) {
         real_set_verify(ssl, mode, ratls_openssl_verify_cb);
@@ -2641,6 +2657,8 @@ int SSL_do_handshake(SSL* ssl) {
             entry->installed_ours_verify = 1;
         }
         pthread_mutex_unlock(&g_openssl_callback_mutex);
+    } else {
+        fprintf(stderr, "[RA-TLS SO] WARNING: Failed to resolve real SSL_set_verify in SSL_do_handshake\n");
     }
 
     /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
@@ -2703,6 +2721,10 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
         real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
         if (!real_conf_verify) {
             real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
+            /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+            if (real_conf_verify == (void*)mbedtls_ssl_conf_verify) {
+                real_conf_verify = NULL;
+            }
         }
         if (real_conf_verify) {
             /* Cast away const - mbedtls_ssl_setup receives const config but
@@ -2732,6 +2754,10 @@ int mbedtls_ssl_setup(mbedtls_ssl_context* ssl, const mbedtls_ssl_config* conf) 
         real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
         if (!real_conf_authmode) {
             real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+            /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+            if (real_conf_authmode == (void*)mbedtls_ssl_conf_authmode) {
+                real_conf_authmode = NULL;
+            }
         }
         if (real_conf_authmode) {
             /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
@@ -2796,6 +2822,10 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
             real_conf_verify = ratls_real_dlsym("mbedtls_ssl_conf_verify");
             if (!real_conf_verify) {
                 real_conf_verify = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_verify");
+                /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+                if (real_conf_verify == (void*)mbedtls_ssl_conf_verify) {
+                    real_conf_verify = NULL;
+                }
             }
             if (real_conf_verify) {
                 real_conf_verify((mbedtls_ssl_config*)conf, ratls_mbedtls_verify_callback,
@@ -2822,6 +2852,10 @@ int mbedtls_ssl_handshake(mbedtls_ssl_context* ssl) {
             real_conf_authmode = ratls_real_dlsym("mbedtls_ssl_conf_authmode");
             if (!real_conf_authmode) {
                 real_conf_authmode = dlsym(RTLD_DEFAULT, "mbedtls_ssl_conf_authmode");
+                /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+                if (real_conf_authmode == (void*)mbedtls_ssl_conf_authmode) {
+                    real_conf_authmode = NULL;
+                }
             }
             if (real_conf_authmode) {
                 /* MBEDTLS_SSL_VERIFY_OPTIONAL = 1, MBEDTLS_SSL_VERIFY_REQUIRED = 2 */
@@ -3088,6 +3122,10 @@ int wolfSSL_connect(void* ssl) {
     real_set_verify = ratls_real_dlsym("wolfSSL_set_verify");
     if (!real_set_verify) {
         real_set_verify = dlsym(RTLD_DEFAULT, "wolfSSL_set_verify");
+        /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+        if (real_set_verify == (void*)wolfSSL_set_verify) {
+            real_set_verify = NULL;
+        }
     }
     if (real_set_verify) {
         real_set_verify(ssl, mode, (void*)ratls_wolfssl_verify_cb);
@@ -3104,6 +3142,8 @@ int wolfSSL_connect(void* ssl) {
             entry->installed_ours = 1;
         }
         pthread_mutex_unlock(&g_wolfssl_callback_mutex);
+    } else {
+        fprintf(stderr, "[RA-TLS SO] WARNING: Failed to resolve real wolfSSL_set_verify in wolfSSL_connect\n");
     }
 
     /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
@@ -3168,6 +3208,10 @@ int wolfSSL_accept(void* ssl) {
     real_set_verify = ratls_real_dlsym("wolfSSL_set_verify");
     if (!real_set_verify) {
         real_set_verify = dlsym(RTLD_DEFAULT, "wolfSSL_set_verify");
+        /* Ensure we didn't resolve to our own wrapper (avoid infinite recursion) */
+        if (real_set_verify == (void*)wolfSSL_set_verify) {
+            real_set_verify = NULL;
+        }
     }
     if (real_set_verify) {
         real_set_verify(ssl, mode, (void*)ratls_wolfssl_verify_cb);
@@ -3184,6 +3228,8 @@ int wolfSSL_accept(void* ssl) {
             entry->installed_ours = 1;
         }
         pthread_mutex_unlock(&g_wolfssl_callback_mutex);
+    } else {
+        fprintf(stderr, "[RA-TLS SO] WARNING: Failed to resolve real wolfSSL_set_verify in wolfSSL_accept\n");
     }
 
     /* Handshake-time enforcement: Force TLS 1.2 max version right before handshake */
